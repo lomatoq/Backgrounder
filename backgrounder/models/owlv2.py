@@ -85,16 +85,25 @@ class OWLv2Localizer:
         with torch.inference_mode():
             outputs = self._model(**inputs)
 
-        results = self._processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs["input_ids"],
-            box_threshold=self._score_threshold,
-            text_threshold=self._score_threshold * 0.5,
-            target_sizes=[(H, W)],
-        )
+        # Manual post-processing — robust across all transformers versions.
+        # logits: (1, num_patches, num_queries); pred_boxes: (1, num_patches, 4) cxcywh [0,1]
+        scores = outputs.logits[0].sigmoid().max(dim=-1).values  # (num_patches,)
+        pred_boxes = outputs.pred_boxes[0]                        # (num_patches, 4)
 
-        boxes  = results[0]["boxes"].cpu().numpy()   # (N, 4) xyxy
-        scores = results[0]["scores"].cpu().numpy()  # (N,)
+        keep = scores > self._score_threshold
+        if not keep.any():
+            return []
+
+        kept_scores = scores[keep]
+        cx, cy, w, h = pred_boxes[keep].unbind(-1)
+        x1 = ((cx - w / 2) * W).clamp(min=0)
+        y1 = ((cy - h / 2) * H).clamp(min=0)
+        x2 = ((cx + w / 2) * W).clamp(max=W)
+        y2 = ((cy + h / 2) * H).clamp(max=H)
+
+        boxes_t  = torch.stack([x1, y1, x2, y2], dim=-1)
+        boxes  = boxes_t.cpu().numpy()
+        scores = kept_scores.cpu().numpy()
 
         if len(boxes) == 0:
             return []
