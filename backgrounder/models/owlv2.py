@@ -85,11 +85,12 @@ class OWLv2Localizer:
         with torch.inference_mode():
             outputs = self._model(**inputs)
 
-        target_sizes = torch.tensor([[H, W]], device=self._device)
-        results = self._processor.post_process_object_detection(
+        results = self._processor.post_process_grounded_object_detection(
             outputs,
-            threshold=self._score_threshold,
-            target_sizes=target_sizes,
+            input_ids=inputs["input_ids"],
+            box_threshold=self._score_threshold,
+            text_threshold=self._score_threshold * 0.5,
+            target_sizes=[(H, W)],
         )
 
         boxes  = results[0]["boxes"].cpu().numpy()   # (N, 4) xyxy
