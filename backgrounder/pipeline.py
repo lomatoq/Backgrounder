@@ -58,6 +58,7 @@ class BackgroundRemovalPipeline:
         self._fp16 = self.config.fp16
 
         self._segmenters: List[BaseSegmenter] = []
+        self._segmenter_ids: List[SegmenterID] = []  # parallel to _segmenters
         self._depth_model: Optional[DepthAnythingV2Small] = None
         self._vitmatte: Optional[ViTMatteRefiner] = None
         self._classifier = None
@@ -149,9 +150,10 @@ class BackgroundRemovalPipeline:
             meta["expert"] = expert
 
             # Map classifier weights to ordered list for ensemble.
+            # Use SegmenterID.value (matches dict keys), NOT model.name (varies).
             seg_weights = [
-                classification.segmenter_weights.get(s.name.lower().split("@")[0], 1.0)
-                for s in self._segmenters
+                classification.segmenter_weights.get(sid.value, 1.0)
+                for sid in self._segmenter_ids
             ]
 
         # Stage B — Coarse ensemble
@@ -286,3 +288,4 @@ class BackgroundRemovalPipeline:
                 self._segmenters.append(BEN2Segmenter(device=self._device, fp16=self._fp16))
             elif sid == SegmenterID.INSPYRENET:
                 self._segmenters.append(InSPyReNetSegmenter(device=self._device))
+            self._segmenter_ids.append(sid)

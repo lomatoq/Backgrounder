@@ -51,7 +51,10 @@ class DepthAnythingV2Small:
         rgb = image.convert("RGB")
 
         inputs = self._processor(images=rgb, return_tensors="pt")
-        inputs = {k: v.to(device=self._device, dtype=self._dtype) for k, v in inputs.items()}
+        inputs = {
+            k: v.to(device=self._device, dtype=self._dtype if v.is_floating_point() else v.dtype)
+            for k, v in inputs.items()
+        }
 
         with torch.inference_mode():
             outputs = self._model(**inputs)

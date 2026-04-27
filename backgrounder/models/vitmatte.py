@@ -81,7 +81,10 @@ class ViTMatteRefiner:
         trimap_pil = Image.fromarray(trimap, mode="L")
 
         inputs = self._processor(images=rgb, trimaps=trimap_pil, return_tensors="pt")
-        inputs = {k: v.to(device=self._device, dtype=self._dtype) for k, v in inputs.items()}
+        inputs = {
+            k: v.to(device=self._device, dtype=self._dtype if v.is_floating_point() else v.dtype)
+            for k, v in inputs.items()
+        }
 
         with torch.inference_mode():
             outputs = self._model(**inputs)
