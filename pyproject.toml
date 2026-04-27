@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "backgrounder"
@@ -25,6 +25,14 @@ dependencies = [
 [project.optional-dependencies]
 inspyrenet = ["transparent-background>=1.2.0"]
 ui = ["gradio>=4.0.0"]
+sdmatte = [
+    "diffusers>=0.30.3",
+    "accelerate>=0.34.2",
+    "easydict>=1.13",
+    "fairscale>=0.4.13",
+    "opencv-python>=4.5.4",
+    "scikit-image>=0.24.0",
+]
 dev = ["pytest>=7.0", "black>=24.0", "ruff>=0.4.0"]
 
 [project.scripts]
