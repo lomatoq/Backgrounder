@@ -77,15 +77,13 @@ def remove_background(
 
 
 def _compose_checker(rgba: Image.Image, square: int = 16) -> Image.Image:
-    """Compose RGBA over a grey checkerboard background."""
+    """Compose RGBA over a grey checkerboard background (vectorised)."""
     w, h = rgba.size
-    checker = Image.new("RGB", (w, h))
-    pix = checker.load()
-    for y in range(h):
-        for x in range(w):
-            light = ((x // square) + (y // square)) % 2 == 0
-            v = 220 if light else 180
-            pix[x, y] = (v, v, v)
+    yy, xx = np.indices((h, w))
+    light = ((xx // square) + (yy // square)) % 2 == 0
+    bg = np.where(light[..., None], 220, 180).astype(np.uint8)
+    bg = np.broadcast_to(bg, (h, w, 3)).copy()
+    checker = Image.fromarray(bg, mode="RGB")
     checker.paste(rgba, mask=rgba.split()[3])
     return checker
 
