@@ -118,34 +118,27 @@ class SAM2Segmenter:
         with torch.inference_mode():
             outputs = self._model(**model_inputs)
 
-        # ── post-process masks ─────────────────────────────────────────
-        # masks_list[0]: (num_prompts, num_masks, H, W) bool
-        masks_list = self._processor.post_process_masks(
-            outputs.pred_masks,
-            raw["original_sizes"],
-            raw["reshaped_input_sizes"],
-        )
-        image_masks = masks_list[0]          # (P, M, H, W)
-        iou_scores  = outputs.iou_scores[0]  # (P, M)
+        # ── post-process masks (version-agnostic) ─────────────────────
+        # pred_masks: (1, num_prompts, num_masks, H', W') — raw logits
+        # Resize to original size via F.interpolate; no processor API needed.
+        import torch.nn.functional as F
 
-        # Best-scored mask per prompt → union
-        P = image_masks.shape[0]
+        H_orig, W_orig = coarse_alpha.shape
+        iou_scores = outputs.iou_scores[0]   # (P, M)
+        pred_masks = outputs.pred_masks[0]   # (P, M, H', W')
+
+        P = pred_masks.shape[0]
         best: List[torch.Tensor] = []
         for p in range(P):
             best_idx = int(iou_scores[p].argmax().item())
-            best.append(image_masks[p, best_idx])  # (H, W) bool
+            mask_logit = pred_masks[p, best_idx].unsqueeze(0).unsqueeze(0).float()  # (1,1,H',W')
+            mask_up = F.interpolate(mask_logit, size=(H_orig, W_orig),
+                                    mode="bilinear", align_corners=False)
+            best.append((mask_up.squeeze() > 0.0))  # sigmoid(0) = 0.5 threshold
         if not best:
             return coarse_alpha
 
         sam_mask = torch.stack(best, dim=0).any(dim=0).float().numpy()  # (H, W)
-
-        # Resize to original if needed
-        if (sam_mask.shape[1], sam_mask.shape[0]) != orig_wh:
-            sam_pil = Image.fromarray((sam_mask * 255).astype(np.uint8))
-            sam_mask = (
-                np.array(sam_pil.resize(orig_wh, Image.LANCZOS)).astype(np.float32)
-                / 255.0
-            )
 
         # ── fuse SAM mask into uncertain band ─────────────────────────
         uncertain = (coarse_alpha > 0.05) & (coarse_alpha < 0.95)
