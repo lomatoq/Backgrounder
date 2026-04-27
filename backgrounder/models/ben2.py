@@ -56,8 +56,24 @@ class BEN2Segmenter(BaseSegmenter):
         sys.modules["_ben2_module"] = module
         spec.loader.exec_module(module)
 
-        # Instantiate and load checkpoint.
-        BEN2Class = getattr(module, "BEN2")
+        # Discover the model class — it has a `loadcheckpoints` method.
+        import inspect, torch.nn as nn
+        BEN2Class = None
+        for name, obj in inspect.getmembers(module, inspect.isclass):
+            if issubclass(obj, nn.Module) and hasattr(obj, "loadcheckpoints"):
+                BEN2Class = obj
+                break
+        if BEN2Class is None:
+            # Fallback: try common names
+            for name in ("BEN2", "BEN2model", "BEN2_model", "Model"):
+                if hasattr(module, name):
+                    BEN2Class = getattr(module, name)
+                    break
+        if BEN2Class is None:
+            raise AttributeError(
+                f"Could not find BEN2 model class in {model_file}. "
+                f"Available: {[n for n, _ in inspect.getmembers(module, inspect.isclass)]}"
+            )
         self._model = BEN2Class()
         self._model.loadcheckpoints(str(repo_dir))
 
