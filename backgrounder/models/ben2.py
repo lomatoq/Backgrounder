@@ -75,7 +75,12 @@ class BEN2Segmenter(BaseSegmenter):
                 f"Available: {[n for n, _ in inspect.getmembers(module, inspect.isclass)]}"
             )
         self._model = BEN2Class()
-        self._model.loadcheckpoints(str(repo_dir))
+        # loadcheckpoints expects the path to the .pth weight file, not the dir.
+        ckpt_candidates = list(repo_dir.glob("*.pth")) + list(repo_dir.glob("*.safetensors"))
+        if not ckpt_candidates:
+            raise FileNotFoundError(f"No checkpoint file found in {repo_dir}")
+        ckpt_path = ckpt_candidates[0]
+        self._model.loadcheckpoints(str(ckpt_path))
 
         if self._device != "cpu":
             self._model = self._model.to(self._device)
