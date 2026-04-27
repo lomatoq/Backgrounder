@@ -103,8 +103,10 @@ class SubjectClassifier:
         text_inputs = self._processor(text=prompts, return_tensors="pt", padding=True)
         text_inputs = {k: v.to(self._device) for k, v in text_inputs.items()}
         with torch.inference_mode():
-            self._text_features = self._model.get_text_features(**text_inputs)
-            self._text_features = self._text_features / self._text_features.norm(dim=-1, keepdim=True)
+            text_feats = self._model.get_text_features(**text_inputs)
+            if not isinstance(text_feats, torch.Tensor):
+                text_feats = text_feats.pooler_output
+            self._text_features = text_feats / text_feats.norm(dim=-1, keepdim=True)
 
     def classify(self, image: Image.Image) -> ClassificationResult:
         if not self._loaded:
@@ -120,6 +122,8 @@ class SubjectClassifier:
 
         with torch.inference_mode():
             image_features = self._model.get_image_features(**inputs)
+            if not isinstance(image_features, torch.Tensor):
+                image_features = image_features.pooler_output
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             logits = (100.0 * image_features @ self._text_features.T).softmax(dim=-1)
 
