@@ -58,3 +58,14 @@ class PipelineConfig:
     # 0 = disabled; >0 = tile_size in pixels.
     tile_size: int = 0
     tile_overlap: int = 128
+
+    # Phase 3: SAM 2.1 boundary refinement (Apache-2.0).
+    # Activated when quality score < sam2_quality_trigger OR subject == complex_multi.
+    use_sam2: bool = False
+    sam2_model_id: str = "facebook/sam2.1-hiera-base-plus"
+    sam2_quality_trigger: float = 0.60
+
+    # Phase 3: OWLv2 open-vocabulary localizer (Apache-2.0).
+    # Supplies bounding-box prompts to SAM 2.1 for multi-object scenes.
+    use_owlv2: bool = False
+    owlv2_model_id: str = "google/owlv2-base-patch16-ensemble"

@@ -4,6 +4,8 @@ from .depth_refine import depth_aware_refine, smooth_alpha_boundary
 from .expert_refine import expert_refine
 from .judge import score_alpha, QualityReport
 from .tiling import tile_process
+from .localize import sam2_refine
+from .transparency import transparency_refine
 
 __all__ = [
     "ensemble_predict",
@@ -15,4 +17,6 @@ __all__ = [
     "score_alpha",
     "QualityReport",
     "tile_process",
+    "sam2_refine",
+    "transparency_refine",
 ]

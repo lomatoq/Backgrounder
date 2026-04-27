@@ -13,6 +13,8 @@ from backgrounder.models import (
     InSPyReNetSegmenter,
     DepthAnythingV2Small,
     ViTMatteRefiner,
+    SAM2Segmenter,
+    OWLv2Localizer,
 )
 from backgrounder.models.base import BaseSegmenter
 from backgrounder.result import MattingResult
@@ -23,6 +25,8 @@ from backgrounder.stages import (
     expert_refine,
     score_alpha,
     tile_process,
+    sam2_refine,
+    transparency_refine,
 )
 from backgrounder.utils import (
     resolve_device,
@@ -50,6 +54,13 @@ class BackgroundRemovalPipeline:
     A. Classify: CLIP subject classifier → adjust segmenter weights + pick expert
     D. Expert routing: portrait/fur → ViTMatte; product/glass → depth-only
     4K: SAHI-style tiling for images larger than config.tile_size
+
+    Phase 3 additions
+    ─────────────────
+    G. SAM 2.1 refinement: precise mask via point/box prompts when quality is low
+       or scene is complex_multi.  Box prompts supplied by OWLv2 if enabled.
+    H. Transparency: glass/smoke post-processing — soften alpha in high-uncertainty
+       + depth-boundary regions; apply guided-filter edge-aware smoothing.
     """
 
     def __init__(self, config: Optional[PipelineConfig] = None) -> None:
@@ -62,6 +73,8 @@ class BackgroundRemovalPipeline:
         self._depth_model: Optional[DepthAnythingV2Small] = None
         self._vitmatte: Optional[ViTMatteRefiner] = None
         self._classifier = None
+        self._sam2: Optional[SAM2Segmenter] = None
+        self._owlv2: Optional[OWLv2Localizer] = None
         self._ready = False
 
     # ------------------------------------------------------------------ #
@@ -94,6 +107,21 @@ class BackgroundRemovalPipeline:
             from backgrounder.classifier import SubjectClassifier
             self._classifier = SubjectClassifier(device=self._device)
             self._classifier.load()
+
+        if self.config.use_sam2:
+            self._sam2 = SAM2Segmenter(
+                device=self._device,
+                fp16=self._fp16,
+                model_id=self.config.sam2_model_id,
+            )
+            self._sam2.load()
+
+        if self.config.use_owlv2:
+            self._owlv2 = OWLv2Localizer(
+                device=self._device,
+                model_id=self.config.owlv2_model_id,
+            )
+            self._owlv2.load()
 
         self._ready = True
         return self
@@ -128,6 +156,7 @@ class BackgroundRemovalPipeline:
         classification = None
         seg_weights: Optional[List[float]] = None
         expert = "depth_only"
+        subject_type = "generic"
 
         if self._classifier is not None:
             with timer("stage_A_classify", meta["timings_ms"]):
@@ -146,7 +175,8 @@ class BackgroundRemovalPipeline:
                     classification = self._classifier.classify(image)
 
             expert = classification.expert
-            meta["subject_type"] = classification.subject_type
+            subject_type = classification.subject_type
+            meta["subject_type"] = subject_type
             meta["expert"] = expert
 
             # Map classifier weights to ordered list for ensemble.
@@ -199,7 +229,7 @@ class BackgroundRemovalPipeline:
                 vitmatte=self._vitmatte,
             )
 
-        # Stage F — Quality judge
+        # Stage F — Quality judge + wider-trimap retry
         with timer("stage_F_judge", meta["timings_ms"]):
             report = score_alpha(alpha, depth_edges=depth_edges, confidence=ben2_confidence)
             meta["quality"] = str(report)
@@ -223,6 +253,40 @@ class BackgroundRemovalPipeline:
             if report2.score > report.score:
                 alpha, report = alpha2, report2
                 meta["quality_retry"] = str(report2)
+
+        # Stage G — SAM 2.1 refinement (Phase 3, optional)
+        if self._sam2 is not None:
+            _need_sam2 = (
+                report.score < self.config.sam2_quality_trigger
+                or subject_type == "complex_multi"
+            )
+            if _need_sam2:
+                with timer("stage_G_sam2", meta["timings_ms"]):
+                    alpha_sam2 = sam2_refine(
+                        image=image,
+                        alpha=alpha,
+                        sam2=self._sam2,
+                        owlv2=self._owlv2,
+                        subject_type=subject_type,
+                    )
+                    report_sam2 = score_alpha(
+                        alpha_sam2, depth_edges=depth_edges, confidence=ben2_confidence
+                    )
+                    if report_sam2.score >= report.score:
+                        alpha = alpha_sam2
+                        report = report_sam2
+                        meta["sam2_used"] = True
+                        meta["quality_sam2"] = str(report_sam2)
+
+        # Stage H — Transparency post-processing (Phase 3)
+        if subject_type == "transparent":
+            with timer("stage_H_transparency", meta["timings_ms"]):
+                alpha = transparency_refine(
+                    alpha=alpha,
+                    image=image,
+                    uncertainty=uncertainty,
+                    depth_edges=depth_edges,
+                )
 
         # Stage E — Foreground decontamination
         with timer("stage_E_decontam", meta["timings_ms"]):

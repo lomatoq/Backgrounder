@@ -17,10 +17,17 @@ _pipeline = None
 _pipeline_cfg: dict = {}
 
 
-def _get_pipeline(device: str, segmenters: str, use_depth: bool, use_classifier: bool):
+def _get_pipeline(
+    device: str,
+    segmenters: str,
+    use_depth: bool,
+    use_classifier: bool,
+    use_sam2: bool,
+    use_owlv2: bool,
+):
     global _pipeline, _pipeline_cfg
 
-    cfg_key = (device, segmenters, use_depth, use_classifier)
+    cfg_key = (device, segmenters, use_depth, use_classifier, use_sam2, use_owlv2)
     if _pipeline is not None and _pipeline_cfg.get("key") == cfg_key:
         return _pipeline
 
@@ -32,6 +39,8 @@ def _get_pipeline(device: str, segmenters: str, use_depth: bool, use_classifier:
         device=Device(device),
         use_depth=use_depth,
         use_classifier=use_classifier,
+        use_sam2=use_sam2,
+        use_owlv2=use_owlv2 and use_sam2,  # OWLv2 only meaningful with SAM2
         fp16=(device == "cuda"),
     )
     _pipeline = BackgroundRemovalPipeline(config).load()
@@ -47,6 +56,8 @@ def remove_background(
     segmenters: str,
     use_depth: bool,
     use_classifier: bool,
+    use_sam2: bool,
+    use_owlv2: bool,
     subject_override: str,
     checkerboard: bool,
 ) -> tuple[Image.Image, Image.Image, str]:
@@ -56,7 +67,7 @@ def remove_background(
     if image is None:
         return None, None, "Upload an image first."
 
-    pipeline = _get_pipeline(device, segmenters, use_depth, use_classifier)
+    pipeline = _get_pipeline(device, segmenters, use_depth, use_classifier, use_sam2, use_owlv2)
 
     # Subject type override
     pipeline.config.subject_type_override = subject_override if subject_override != "auto" else None
@@ -70,6 +81,7 @@ def remove_background(
         "quality_score": round(result.quality_score, 3),
         "subject_type": result.metadata.get("subject_type", "n/a"),
         "expert_used": result.metadata.get("expert", "n/a"),
+        "sam2_used": result.metadata.get("sam2_used", False),
         "timings_ms": result.metadata.get("timings_ms", {}),
         "quality_detail": result.metadata.get("quality", ""),
     }
@@ -100,8 +112,11 @@ def build_ui():
     ]
 
     with gr.Blocks(title="Backgrounder") as demo:
-        gr.Markdown("## Backgrounder — SOTA background removal\n"
-                    "BiRefNet HR + BEN2 + Depth Anything V2 + CLIP classifier")
+        gr.Markdown(
+            "## Backgrounder — SOTA background removal\n"
+            "BiRefNet HR · BEN2 · Depth Anything V2 · CLIP classifier · "
+            "SAM 2.1 · OWLv2"
+        )
 
         with gr.Row():
             # ── left column: input + settings ──
@@ -123,6 +138,19 @@ def build_ui():
                     subject_override = gr.Dropdown(
                         subject_choices, value="auto", label="Subject type override",
                     )
+
+                    gr.Markdown("**Phase 3** — activate for harder images")
+                    use_sam2 = gr.Checkbox(
+                        value=False,
+                        label="SAM 2.1 refiner  (triggers when quality < 0.60 or complex_multi)",
+                        info="Requires transformers ≥ 4.49 · downloads ~400 MB on first use",
+                    )
+                    use_owlv2 = gr.Checkbox(
+                        value=False,
+                        label="OWLv2 localizer  (box prompts for SAM 2.1)",
+                        info="Only active when SAM 2.1 is enabled · ~300 MB on first use",
+                    )
+
                     checkerboard = gr.Checkbox(value=True, label="Preview on checkerboard")
 
                 btn = gr.Button("Remove background", variant="primary")
@@ -133,20 +161,15 @@ def build_ui():
                 out_preview = gr.Image(type="pil", label="Preview on checker")
                 out_info = gr.Code(label="Diagnostics (JSON)", language="json")
 
-        btn.click(
-            fn=remove_background,
-            inputs=[inp, device, segmenters, use_depth, use_classifier,
-                    subject_override, checkerboard],
-            outputs=[out_rgba, out_preview, out_info],
-        )
+        _inputs = [
+            inp, device, segmenters, use_depth, use_classifier,
+            use_sam2, use_owlv2, subject_override, checkerboard,
+        ]
 
-        # Also trigger on image upload for quick feedback.
-        inp.upload(
-            fn=remove_background,
-            inputs=[inp, device, segmenters, use_depth, use_classifier,
-                    subject_override, checkerboard],
-            outputs=[out_rgba, out_preview, out_info],
-        )
+        btn.click(fn=remove_background, inputs=_inputs,
+                  outputs=[out_rgba, out_preview, out_info])
+        inp.upload(fn=remove_background, inputs=_inputs,
+                   outputs=[out_rgba, out_preview, out_info])
 
     return demo
 
