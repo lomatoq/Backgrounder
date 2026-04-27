@@ -41,6 +41,13 @@ class PipelineConfig:
     quality_threshold: float = 0.55
     max_refine_attempts: int = 2
 
+    # Phase 4A: classical matting refinement, no extra model weights.
+    use_closed_form_refine: bool = True
+    closed_form_max_pixels: int = 65_536
+    use_uncertainty_sharpen: bool = True
+    uncertainty_sharpen_threshold: float = 0.15
+    uncertainty_sharpen_strength: float = 0.60
+
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
 
@@ -53,6 +60,18 @@ class PipelineConfig:
     # Weights are NC (Adobe Composition-1k) — set True only if you accept that.
     use_vitmatte: bool = False
     vitmatte_allow_nc: bool = False
+
+    # Phase 3: SDMatte / LiteSDMatte diffusion refiner.
+    # Requires a local checkout of https://github.com/vivoCameraResearch/SDMatte,
+    # detectron2, CUDA, and a downloaded .pth checkpoint.
+    use_sdmatte: bool = False
+    sdmatte_repo_path: str | None = None
+    sdmatte_checkpoint_path: str | None = None
+    sdmatte_variant: str = "lite"  # "lite" or "sdmatte"
+    sdmatte_pretrained_model_name_or_path: str | None = None
+    sdmatte_prompt_mode: str = "bbox"  # bbox, mask, trimap, point
+    sdmatte_input_size: int = 1024
+    sdmatte_quality_trigger: float = 0.72
 
     # Phase 2: tile large images for 4K+ support.
     # 0 = disabled; >0 = tile_size in pixels.

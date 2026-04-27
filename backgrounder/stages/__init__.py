@@ -1,6 +1,6 @@
 from .ensemble import ensemble_predict
 from .trimap import generate_trimap, unknown_mask
-from .depth_refine import depth_aware_refine, smooth_alpha_boundary
+from .depth_refine import closed_form_matting_refine, smooth_alpha_boundary, uncertainty_gated_sharpen
 from .expert_refine import expert_refine
 from .judge import score_alpha, QualityReport
 from .tiling import tile_process
@@ -11,8 +11,9 @@ __all__ = [
     "ensemble_predict",
     "generate_trimap",
     "unknown_mask",
-    "depth_aware_refine",
+    "closed_form_matting_refine",
     "smooth_alpha_boundary",
+    "uncertainty_gated_sharpen",
     "expert_refine",
     "score_alpha",
     "QualityReport",

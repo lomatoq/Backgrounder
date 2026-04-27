@@ -28,18 +28,25 @@ def transparency_refine(
     """
     alpha = alpha.copy()
 
-    # 1. Glass-candidate softening
+    # 1. Glass-candidate softening. Keep confident opaque/empty pixels intact,
+    # otherwise thin chair legs and hard shell rims turn into grey haze.
     if depth_edges is not None:
-        glass_mask = (uncertainty > 0.20) & (depth_edges > 0.15)
+        semi = (alpha > 0.08) & (alpha < 0.92)
+        glass_mask = semi & (uncertainty > 0.20) & (depth_edges > 0.15)
         if glass_mask.any():
             # Blend strength: proportional to uncertainty × depth-edge magnitude
             strength = np.clip(uncertainty * depth_edges * 4.0, 0.0, 0.55)
             # Target: 0.5 (partial transparency) where glass is detected
-            alpha = alpha * (1.0 - strength) + 0.5 * strength
+            alpha[glass_mask] = (
+                alpha[glass_mask] * (1.0 - strength[glass_mask])
+                + 0.5 * strength[glass_mask]
+            )
 
-    # 2. Edge-preserving guided-filter smoothing
+    # 2. Edge-preserving guided-filter smoothing, limited to ambiguous alpha.
     guide = np.array(image.convert("RGB")).astype(np.float32) / 255.0
-    alpha = _guided_filter(guide, alpha, r=8, eps=1e-3)
+    guided = _guided_filter(guide, alpha, r=5, eps=1e-3)
+    ambiguous = (alpha > 0.03) & (alpha < 0.97)
+    alpha[ambiguous] = 0.70 * alpha[ambiguous] + 0.30 * guided[ambiguous]
 
     return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 

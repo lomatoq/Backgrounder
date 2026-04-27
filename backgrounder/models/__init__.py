@@ -4,6 +4,7 @@ from .ben2 import BEN2Segmenter
 from .depth_anything import DepthAnythingV2Small
 from .inspyrenet import InSPyReNetSegmenter
 from .vitmatte import ViTMatteRefiner
+from .sdmatte import SDMatteRefiner
 from .sam2 import SAM2Segmenter
 from .owlv2 import OWLv2Localizer
 
@@ -14,6 +15,7 @@ __all__ = [
     "DepthAnythingV2Small",
     "InSPyReNetSegmenter",
     "ViTMatteRefiner",
+    "SDMatteRefiner",
     "SAM2Segmenter",
     "OWLv2Localizer",
 ]
