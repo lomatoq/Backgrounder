@@ -119,26 +119,32 @@ class SAM2Segmenter:
             outputs = self._model(**model_inputs)
 
         # ── post-process masks (version-agnostic) ─────────────────────
-        # pred_masks: (1, num_prompts, num_masks, H', W') — raw logits
-        # Resize to original size via F.interpolate; no processor API needed.
+        # pred_masks: (1, P, M, H', W') or (1, P, M, 1, H', W') — raw logits
+        # Resize to original resolution via F.interpolate; no processor API needed.
         import torch.nn.functional as F
+
+        if outputs.pred_masks is None:
+            return coarse_alpha
 
         H_orig, W_orig = coarse_alpha.shape
         iou_scores = outputs.iou_scores[0]   # (P, M)
-        pred_masks = outputs.pred_masks[0]   # (P, M, H', W')
+        pred_masks = outputs.pred_masks[0]   # (P, M, [1,] H', W')
 
         P = pred_masks.shape[0]
         best: List[torch.Tensor] = []
         for p in range(P):
             best_idx = int(iou_scores[p].argmax().item())
-            mask_logit = pred_masks[p, best_idx].unsqueeze(0).unsqueeze(0).float()  # (1,1,H',W')
+            mask_raw = pred_masks[p, best_idx]  # (H', W') or (1, H', W')
+            # Ensure exactly (1, 1, H', W') for F.interpolate
+            mask_logit = mask_raw.reshape(1, 1, *mask_raw.shape[-2:]).float()
             mask_up = F.interpolate(mask_logit, size=(H_orig, W_orig),
                                     mode="bilinear", align_corners=False)
-            best.append((mask_up.squeeze() > 0.0))  # sigmoid(0) = 0.5 threshold
+            best.append((mask_up.squeeze() > 0.0))  # logit > 0 ↔ prob > 0.5
         if not best:
             return coarse_alpha
 
-        sam_mask = torch.stack(best, dim=0).any(dim=0).float().numpy()  # (H, W)
+        # Move to CPU before numpy — required for MPS / CUDA devices
+        sam_mask = torch.stack(best, dim=0).any(dim=0).float().cpu().numpy()  # (H, W)
 
         # ── fuse SAM mask into uncertain band ─────────────────────────
         uncertain = (coarse_alpha > 0.05) & (coarse_alpha < 0.95)
