@@ -101,7 +101,7 @@ def build_ui():
         "complex_multi", "generic",
     ]
 
-    with gr.Blocks(title="Backgrounder", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Backgrounder") as demo:
         gr.Markdown("## Backgrounder — SOTA background removal\n"
                     "BiRefNet HR + BEN2 + Depth Anything V2 + CLIP classifier")
 
@@ -162,4 +162,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ui = build_ui()
-    ui.launch(server_port=args.port, share=args.share, inbrowser=True)
+    import gradio as gr
+    ui.launch(server_port=args.port, share=args.share, inbrowser=True, theme=gr.themes.Soft())
