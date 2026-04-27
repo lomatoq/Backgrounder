@@ -29,6 +29,14 @@ from backgrounder.config import PipelineConfig, SegmenterID, Device
               help="Save premultiplied alpha PNG (avoids fringing on composition).")
 @click.option("--quality-threshold", default=0.55, show_default=True, type=float,
               help="Re-run refinement if quality score is below this value.")
+@click.option("--no-classifier", is_flag=True, default=False,
+              help="Disable CLIP subject classifier (Phase 2).")
+@click.option("--subject-type", default=None,
+              help="Override subject type: portrait,animal_fur,product,plant_thin,transparent,vehicle,anime,complex_multi,generic")
+@click.option("--vitmatte", is_flag=True, default=False,
+              help="Enable ViTMatte refiner for hair/fur. NOTE: weights are NC (Adobe Composition-1k).")
+@click.option("--tile-size", default=0, show_default=True, type=int,
+              help="Tile size for 4K+ images (0 = disabled, e.g. 1024).")
 @click.option("--debug", is_flag=True, default=False,
               help="Print quality report and timings per image.")
 def main(
@@ -42,6 +50,10 @@ def main(
     trimap_dilation: int,
     premultiplied: bool,
     quality_threshold: float,
+    no_classifier: bool,
+    subject_type: Optional[str],
+    vitmatte: bool,
+    tile_size: int,
     debug: bool,
 ) -> None:
     """Remove backgrounds from one or more images.
@@ -65,6 +77,11 @@ def main(
         trimap_dilation=trimap_dilation,
         premultiplied=premultiplied,
         quality_threshold=quality_threshold,
+        use_classifier=not no_classifier,
+        subject_type_override=subject_type,
+        use_vitmatte=vitmatte,
+        vitmatte_allow_nc=vitmatte,
+        tile_size=tile_size,
     )
 
     click.echo(f"Loading models on {device}…")

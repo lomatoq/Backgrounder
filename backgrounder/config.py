@@ -43,3 +43,18 @@ class PipelineConfig:
 
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
+
+    # Phase 2: subject classifier drives segmenter weights + expert routing.
+    use_classifier: bool = True
+    # Override auto-detected subject type (one of classifier.SUBJECT_TYPES or None).
+    subject_type_override: str | None = None
+
+    # Phase 2: ViTMatte trimap-based refiner for hair/fur.
+    # Weights are NC (Adobe Composition-1k) — set True only if you accept that.
+    use_vitmatte: bool = False
+    vitmatte_allow_nc: bool = False
+
+    # Phase 2: tile large images for 4K+ support.
+    # 0 = disabled; >0 = tile_size in pixels.
+    tile_size: int = 0
+    tile_overlap: int = 128
