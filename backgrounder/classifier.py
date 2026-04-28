@@ -20,15 +20,15 @@ SUBJECT_TYPES = [
 
 # Text prompts fed to CLIP for zero-shot classification.
 _PROMPTS: Dict[str, str] = {
-    "portrait":      "a portrait photo of a person or model showing face and hair",
-    "animal_fur":    "a photo of a furry animal, pet, or wildlife",
-    "product":       "a product or object photo on a plain, white, or studio background",
-    "plant_thin":    "a photo of a plant, flower, tree, grass, or thin branches",
-    "transparent":   "a photo of transparent glass, crystal, smoke, or water",
-    "vehicle":       "a photo of a car, motorcycle, truck, or other vehicle",
-    "anime":         "an anime, cartoon, or digital illustration",
-    "complex_multi": "a fashion photo, full-body photo, or photo with multiple objects or complex clothing",
-    "generic":       "a simple photo with a single clear object",
+    "portrait":      "a portrait or fashion photo of a person, model, or human with visible hair",
+    "animal_fur":    "a photo of a furry animal, pet, cat, dog, or wildlife",
+    "product":       "a product photo of an object, appliance, toy, gadget, 3D render, or item",
+    "plant_thin":    "a photo of a plant, flower, tree, grass, leaves, or thin branches",
+    "transparent":   "a photo of transparent glass, crystal, water, or smoke",
+    "vehicle":       "a photo of a car, motorcycle, truck, bicycle, or other vehicle",
+    "anime":         "an anime drawing, cartoon character, or digital illustration",
+    "complex_multi": "a group photo or scene with multiple people or multiple separate foreground subjects",
+    "generic":       "a miscellaneous photo that does not fit other categories",
 }
 
 # Segmenter weight overrides per subject type.
@@ -41,7 +41,7 @@ SEGMENTER_WEIGHTS: Dict[str, Dict[str, float]] = {
     "transparent":   {"birefnet_hr": 0.60, "ben2": 0.40, "inspyrenet": 0.00},
     "vehicle":       {"birefnet_hr": 0.50, "ben2": 0.35, "inspyrenet": 0.15},
     "anime":         {"birefnet_hr": 0.40, "ben2": 0.30, "inspyrenet": 0.30},
-    "complex_multi": {"birefnet_hr": 0.40, "ben2": 0.45, "inspyrenet": 0.15},
+    "complex_multi": {"birefnet_hr": 0.50, "ben2": 0.40, "inspyrenet": 0.10},
     "generic":       {"birefnet_hr": 0.40, "ben2": 0.40, "inspyrenet": 0.20},
 }
 
@@ -50,11 +50,11 @@ EXPERT_MAP: Dict[str, str] = {
     "portrait":      "vitmatte",
     "animal_fur":    "vitmatte",
     "plant_thin":    "vitmatte",
-    "complex_multi": "vitmatte",   # fashion/full-body shots have hair too
     "product":       "depth_only",
     "transparent":   "depth_only",
     "vehicle":       "depth_only",
     "anime":         "depth_only",
+    "complex_multi": "depth_only",   # multi-object scenes need crisp edges, not ViTMatte blur
     "generic":       "depth_only",
 }
 
