@@ -28,17 +28,19 @@ def score_alpha(
     alpha: np.ndarray,
     depth_edges: Optional[np.ndarray] = None,
     confidence: Optional[np.ndarray] = None,
-    w_sharpness: float = 0.35,
+    w_sharpness: float = 0.20,
     w_depth_iou: float = 0.30,
-    w_confidence: float = 0.20,
+    w_confidence: float = 0.35,
     w_smoothness: float = 0.15,
 ) -> QualityReport:
     """
     Composite quality score from four orthogonal signals.
 
     edge_sharpness  — mean Sobel magnitude in α∈(0.05, 0.95); rewards crisp boundaries.
+                      Weight lowered vs v1: soft alpha at hair tips is correct, not bad.
     depth_edge_iou  — IoU of dilated alpha-edges vs depth-edges; catches halo/low-contrast.
     confidence_mean — mean BEN2 confidence in uncertain band; rewards model certainty.
+                      Primary signal — high model confidence → reliable mask.
     smoothness      — 1 − jaggedness; rewards smooth, non-oscillating boundary.
     """
     uncertain = (alpha > 0.05) & (alpha < 0.95)

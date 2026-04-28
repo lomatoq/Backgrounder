@@ -34,8 +34,8 @@ _PROMPTS: Dict[str, str] = {
 # Segmenter weight overrides per subject type.
 # Keys match SegmenterID values; absent keys → equal weight (normalised later).
 SEGMENTER_WEIGHTS: Dict[str, Dict[str, float]] = {
-    "portrait":      {"birefnet_hr": 0.35, "ben2": 0.45, "inspyrenet": 0.20},
-    "animal_fur":    {"birefnet_hr": 0.45, "ben2": 0.35, "inspyrenet": 0.20},
+    "portrait":      {"birefnet_hr": 0.55, "ben2": 0.45, "inspyrenet": 0.00},
+    "animal_fur":    {"birefnet_hr": 0.55, "ben2": 0.35, "inspyrenet": 0.10},
     "product":       {"birefnet_hr": 0.30, "ben2": 0.55, "inspyrenet": 0.15},
     "plant_thin":    {"birefnet_hr": 0.50, "ben2": 0.30, "inspyrenet": 0.20},
     "transparent":   {"birefnet_hr": 0.60, "ben2": 0.40, "inspyrenet": 0.00},
