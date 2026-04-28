@@ -6,6 +6,7 @@ from .judge import score_alpha, QualityReport
 from .tiling import tile_process
 from .localize import sam2_refine
 from .transparency import transparency_refine
+from .alpha_sharpen import sharpen_alpha
 
 __all__ = [
     "ensemble_predict",
@@ -19,4 +20,5 @@ __all__ = [
     "tile_process",
     "sam2_refine",
     "transparency_refine",
+    "sharpen_alpha",
 ]

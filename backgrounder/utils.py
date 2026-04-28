@@ -6,7 +6,7 @@ from typing import Iterator
 import numpy as np
 import torch
 from PIL import Image
-from scipy.ndimage import sobel
+from scipy.ndimage import sobel, uniform_filter
 
 
 def resolve_device(requested: str = "auto") -> str:
@@ -68,6 +68,47 @@ def estimate_foreground(image_rgb: np.ndarray, alpha: np.ndarray, sigma: int = 2
         fg[:, :, c] = np.where(a > 0.95, fg[:, :, c], fg_est)
 
     return np.clip(fg, 0, 255).astype(np.uint8)
+
+
+def guided_filter(
+    guide: np.ndarray,   # H×W×3  float32 [0, 1]  — RGB image
+    src: np.ndarray,     # H×W    float32 [0, 1]  — alpha to smooth
+    r: int = 8,
+    eps: float = 1e-3,
+) -> np.ndarray:
+    """
+    Fast approximate guided filter (He et al. ECCV 2010).
+
+    Smooths `src` while preserving edges defined by `guide`.
+    Uses greyscale mean of the RGB guide for efficiency.
+    """
+    def box(x: np.ndarray) -> np.ndarray:
+        return uniform_filter(x.astype(np.float64), size=2 * r + 1)
+
+    I = guide.mean(axis=2).astype(np.float64)
+    p = src.astype(np.float64)
+
+    mean_I  = box(I)
+    mean_p  = box(p)
+    mean_Ip = box(I * p)
+    mean_II = box(I * I)
+
+    cov_Ip = mean_Ip - mean_I * mean_p
+    var_I  = mean_II - mean_I ** 2
+
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+
+    return (box(a) * I + box(b)).astype(np.float32)
+
+
+def rgb_edge_magnitude(image_rgb: np.ndarray) -> np.ndarray:
+    """Normalised Sobel gradient magnitude of the greyscale image, float32 [0,1]."""
+    gray = image_rgb.mean(axis=2).astype(np.float32)
+    gx = sobel(gray, axis=1)
+    gy = sobel(gray, axis=0)
+    mag = np.sqrt(gx ** 2 + gy ** 2)
+    return (mag / (mag.max() + 1e-8)).astype(np.float32)
 
 
 def compose_rgba(foreground: np.ndarray, alpha: np.ndarray) -> Image.Image:

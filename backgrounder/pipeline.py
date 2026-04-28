@@ -27,6 +27,7 @@ from backgrounder.stages import (
     tile_process,
     sam2_refine,
     transparency_refine,
+    sharpen_alpha,
 )
 from backgrounder.utils import (
     resolve_device,
@@ -228,6 +229,10 @@ class BackgroundRemovalPipeline:
                 depth_edges=depth_edges,
                 vitmatte=self._vitmatte,
             )
+
+        # Stage D' — Uncertainty-gated alpha sharpening (Phase 4A)
+        with timer("stage_Dp_sharpen", meta["timings_ms"]):
+            alpha = sharpen_alpha(alpha, uncertainty)
 
         # Stage F — Quality judge + wider-trimap retry
         with timer("stage_F_judge", meta["timings_ms"]):
