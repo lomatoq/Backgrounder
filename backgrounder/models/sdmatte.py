@@ -162,13 +162,23 @@ class SDMatteRefiner:
 
     @staticmethod
     def _download(url: str, target: Path) -> None:
+        from tqdm import tqdm
         tmp = target.with_suffix(target.suffix + ".tmp")
-        with urlopen(url) as resp, open(tmp, "wb") as f:
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
+        with urlopen(url) as resp:
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            bar = tqdm(
+                total=total or None,
+                unit="B", unit_scale=True, unit_divisor=1024,
+                desc=target.name, leave=True,
+            )
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bar.update(len(chunk))
+            bar.close()
         os.replace(tmp, target)
 
     def refine(
