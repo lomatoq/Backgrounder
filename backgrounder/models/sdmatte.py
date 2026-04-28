@@ -88,9 +88,26 @@ class SDMatteRefiner:
                 "Make sure sdmatte_repo_path points to vivoCameraResearch/SDMatte."
             ) from exc
 
+        # load_weight=True  → download backbone from HuggingFace Hub (model_name_or_path is a HF repo ID)
+        # load_weight=False → read architecture config from local directory (must have subfolders
+        #                     text_encoder/, vae/, unet/, tokenizer/ with config.json files)
+        model_path = self.pretrained_model_name_or_path
+        load_weight = not Path(model_path).is_dir()
+        if load_weight and not Path(model_path).exists():
+            # HF model ID — will download automatically
+            pass
+        elif not load_weight:
+            # Validate expected subdirs exist
+            for sub in ("vae", "unet", "tokenizer"):
+                if not (Path(model_path) / sub).exists():
+                    raise FileNotFoundError(
+                        f"SDMatte model dir missing '{sub}/' subfolder: {model_path}. "
+                        "Run: huggingface-cli download LongfeiHuang/LiteSDMatte --local-dir <path>"
+                    )
+
         self._model = ModelClass(
-            pretrained_model_name_or_path=self.pretrained_model_name_or_path,
-            load_weight=False,
+            pretrained_model_name_or_path=model_path,
+            load_weight=load_weight,
             conv_scale=3,
             num_inference_steps=1,
             aux_input=self._aux_input_name,

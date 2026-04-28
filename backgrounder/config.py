@@ -62,13 +62,17 @@ class PipelineConfig:
     vitmatte_allow_nc: bool = False
 
     # Phase 3: SDMatte / LiteSDMatte diffusion refiner.
-    # Requires a local checkout of https://github.com/vivoCameraResearch/SDMatte,
-    # detectron2, CUDA, and a downloaded .pth checkpoint.
+    # Setup (all three paths required):
+    #   1. sdmatte_repo_path    — clone https://github.com/vivoCameraResearch/SDMatte
+    #   2. sdmatte_model_path   — download HF model locally:
+    #                             huggingface-cli download LongfeiHuang/LiteSDMatte --local-dir <path>
+    #   3. sdmatte_checkpoint_path — path to LiteSDMatte.pth (usually inside sdmatte_model_path)
+    # Also requires: detectron2, diffusers, accelerate, CUDA device.
     use_sdmatte: bool = False
     sdmatte_repo_path: str | None = None
+    sdmatte_model_path: str | None = None        # local dir with vae/, unet/, tokenizer/ subfolders
     sdmatte_checkpoint_path: str | None = None
     sdmatte_variant: str = "lite"  # "lite" or "sdmatte"
-    sdmatte_pretrained_model_name_or_path: str | None = None
     sdmatte_prompt_mode: str = "bbox"  # bbox, mask, trimap, point
     sdmatte_input_size: int = 1024
     sdmatte_quality_trigger: float = 0.72

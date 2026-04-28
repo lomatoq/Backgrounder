@@ -19,6 +19,7 @@ _pipeline_cfg: dict = {}
 
 def _sdmatte_ui_defaults() -> dict:
     repo_path = os.environ.get("BACKGROUNDER_SDMATTE_REPO", "")
+    model_path = os.environ.get("BACKGROUNDER_SDMATTE_MODEL", "")
     checkpoint_path = os.environ.get("BACKGROUNDER_SDMATTE_CHECKPOINT", "")
     system = platform.system().lower()
 
@@ -30,19 +31,25 @@ def _sdmatte_ui_defaults() -> dict:
         cuda_available = False
 
     ready = (
-        system == "windows"
-        and cuda_available
+        cuda_available
         and bool(repo_path)
         and bool(checkpoint_path)
     )
-    status = (
-        "SDMatte auto-ready: Windows + CUDA + env paths detected."
-        if ready
-        else "SDMatte needs Windows/Linux CUDA plus BACKGROUNDER_SDMATTE_REPO and BACKGROUNDER_SDMATTE_CHECKPOINT."
-    )
+    if ready:
+        status = "SDMatte ready: CUDA + env paths detected."
+    else:
+        missing = []
+        if not cuda_available:
+            missing.append("CUDA")
+        if not repo_path:
+            missing.append("BACKGROUNDER_SDMATTE_REPO")
+        if not checkpoint_path:
+            missing.append("BACKGROUNDER_SDMATTE_CHECKPOINT")
+        status = "SDMatte disabled — missing: " + ", ".join(missing) + "."
     return {
         "enabled": ready,
         "repo_path": repo_path,
+        "model_path": model_path,
         "checkpoint_path": checkpoint_path,
         "status": status,
     }
@@ -57,6 +64,7 @@ def _get_pipeline(
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
     sdmatte_repo_path: str,
+    sdmatte_model_path: str,
     sdmatte_checkpoint_path: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
@@ -68,8 +76,9 @@ def _get_pipeline(
     cfg_key = (
         device, segmenters, use_depth, use_classifier,
         use_closed_form, use_uncertainty_sharpen,
-        use_sdmatte, sdmatte_repo_path, sdmatte_checkpoint_path,
-        sdmatte_variant, sdmatte_prompt_mode, use_sam2, use_owlv2,
+        use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
+        sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
+        use_sam2, use_owlv2,
     )
     if _pipeline is not None and _pipeline_cfg.get("key") == cfg_key:
         return _pipeline
@@ -86,11 +95,12 @@ def _get_pipeline(
         use_uncertainty_sharpen=use_uncertainty_sharpen,
         use_sdmatte=use_sdmatte,
         sdmatte_repo_path=sdmatte_repo_path or None,
+        sdmatte_model_path=sdmatte_model_path or None,
         sdmatte_checkpoint_path=sdmatte_checkpoint_path or None,
         sdmatte_variant=sdmatte_variant,
         sdmatte_prompt_mode=sdmatte_prompt_mode,
         use_sam2=use_sam2,
-        use_owlv2=use_owlv2 and use_sam2,  # OWLv2 only meaningful with SAM2
+        use_owlv2=use_owlv2 and use_sam2,
         fp16=(device == "cuda"),
     )
     _pipeline = BackgroundRemovalPipeline(config).load()
@@ -110,6 +120,7 @@ def remove_background(
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
     sdmatte_repo_path: str,
+    sdmatte_model_path: str,
     sdmatte_checkpoint_path: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
@@ -127,8 +138,9 @@ def remove_background(
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
         use_closed_form, use_uncertainty_sharpen,
-        use_sdmatte, sdmatte_repo_path, sdmatte_checkpoint_path,
-        sdmatte_variant, sdmatte_prompt_mode, use_sam2, use_owlv2,
+        use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
+        sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
+        use_sam2, use_owlv2,
     )
 
     # Subject type override
@@ -214,13 +226,19 @@ def build_ui():
                     )
                     sdmatte_repo_path = gr.Textbox(
                         value=sdmatte_defaults["repo_path"],
-                        label="SDMatte repo path",
+                        label="SDMatte code repo path (vivoCameraResearch/SDMatte clone)",
                         placeholder="/path/to/SDMatte",
+                    )
+                    sdmatte_model_path = gr.Textbox(
+                        value=sdmatte_defaults["model_path"],
+                        label="SDMatte model dir (huggingface-cli download LongfeiHuang/LiteSDMatte --local-dir …)",
+                        placeholder="/path/to/LiteSDMatte_model",
+                        info="Leave blank to auto-derive from checkpoint parent folder",
                     )
                     sdmatte_checkpoint_path = gr.Textbox(
                         value=sdmatte_defaults["checkpoint_path"],
-                        label="SDMatte checkpoint path",
-                        placeholder="/path/to/LiteSDMatte.pth",
+                        label="SDMatte checkpoint path (.pth file)",
+                        placeholder="/path/to/LiteSDMatte_model/LiteSDMatte.pth",
                     )
                     sdmatte_variant = gr.Radio(
                         ["lite", "sdmatte"], value="lite", label="SDMatte variant",
@@ -253,8 +271,8 @@ def build_ui():
         _inputs = [
             inp, device, segmenters, use_depth, use_classifier,
             use_closed_form, use_uncertainty_sharpen,
-            use_sdmatte, sdmatte_repo_path, sdmatte_checkpoint_path,
-            sdmatte_variant, sdmatte_prompt_mode,
+            use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
+            sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
         ]
 

@@ -110,12 +110,17 @@ class BackgroundRemovalPipeline:
                 raise ValueError(
                     "use_sdmatte=True requires sdmatte_repo_path and sdmatte_checkpoint_path."
                 )
+            # Resolve model_path: explicit config > parent dir of checkpoint > HF model ID
+            model_path = (
+                self.config.sdmatte_model_path
+                or str(Path(self.config.sdmatte_checkpoint_path).parent)
+            )
             self._sdmatte = SDMatteRefiner(
                 repo_path=self.config.sdmatte_repo_path,
                 checkpoint_path=self.config.sdmatte_checkpoint_path,
                 variant=self.config.sdmatte_variant,
                 device=self._device,
-                pretrained_model_name_or_path=self.config.sdmatte_pretrained_model_name_or_path,
+                pretrained_model_name_or_path=model_path,
                 prompt_mode=self.config.sdmatte_prompt_mode,
                 input_size=self.config.sdmatte_input_size,
             )

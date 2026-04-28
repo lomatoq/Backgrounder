@@ -11,3 +11,6 @@ einops>=0.7.0
 kornia>=0.7.0
 timm>=0.9.0
 opencv-python-headless>=4.8.0
+# SDMatte optional deps (only needed if use_sdmatte=True):
+diffusers>=0.30.0
+accelerate>=0.30.0
