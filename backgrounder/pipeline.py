@@ -305,7 +305,9 @@ class BackgroundRemovalPipeline:
                 meta["quality_retry"] = str(report2)
 
         # Stage G0 — SDMatte diffusion refinement (optional, heavy CUDA path)
-        if self._sdmatte is not None and report.score < self.config.sdmatte_quality_trigger:
+        # Runs whenever SDMatte is loaded (user explicitly enabled it).
+        # quality_trigger only applies when sdmatte was loaded automatically.
+        if self._sdmatte is not None:
             with timer("stage_G0_sdmatte", meta["timings_ms"]):
                 self._sdmatte.is_transparent = subject_type == "transparent"
                 alpha_sdmatte = self._sdmatte.refine(image, alpha, trimap)
@@ -316,8 +318,9 @@ class BackgroundRemovalPipeline:
                     alpha = alpha_sdmatte
                     report = report_sdmatte
                     meta["quality"] = str(report_sdmatte)
-                    meta["sdmatte_used"] = True
-                    meta["quality_sdmatte"] = str(report_sdmatte)
+                meta["sdmatte_used"] = True
+                meta["sdmatte_score"] = round(report_sdmatte.score, 3)
+                meta["sdmatte_accepted"] = report_sdmatte.score >= report.score
 
         # Stage G — SAM 2.1 refinement (Phase 3, optional)
         if self._sam2 is not None:
