@@ -50,22 +50,49 @@ def estimate_foreground(image_rgb: np.ndarray, alpha: np.ndarray, sigma: int = 2
     """
     Decontaminate foreground by removing background colour bleed at boundaries.
 
-    Uses alpha-weighted Gaussian pooling: each boundary pixel's colour is replaced
-    by a local weighted average that strongly favours definitely-foreground pixels,
-    so background tinting is stripped out.
+    Two-pass approach:
+    1. Estimate the background colour from definitely-background pixels.
+    2. For boundary pixels, apply inverse-compositing to recover the true foreground
+       colour: fg = (pixel - bg*(1-a)) / a.  This removes the background halo.
+    Falls back to alpha-weighted Gaussian smoothing where inverse-compositing is
+    numerically unstable (very low alpha).
     """
     from scipy.ndimage import gaussian_filter
 
-    fg = image_rgb.astype(np.float32)
+    img = image_rgb.astype(np.float32)
     a = np.clip(alpha, 0.0, 1.0).astype(np.float32)
-    w = a ** 2  # weight: 1 at fg=1, 0 at fg=0
 
-    for c in range(fg.shape[2]):
-        numerator = gaussian_filter(fg[:, :, c] * w, sigma=sigma)
+    # 1. Background colour estimate: median of pixels where alpha < 0.05.
+    bg_mask = a < 0.05
+    if bg_mask.sum() > 16:
+        bg_color = np.median(img[bg_mask], axis=0)  # shape (3,)
+    else:
+        # No clear background — fall back to Gaussian decontamination only.
+        bg_color = None
+
+    # 2. Gaussian-weighted foreground estimate (for low-alpha fallback).
+    w = a ** 2
+    fg_gauss = img.copy()
+    for c in range(img.shape[2]):
+        numerator = gaussian_filter(img[:, :, c] * w, sigma=sigma)
         denominator = gaussian_filter(w, sigma=sigma) + 1e-8
-        fg_est = numerator / denominator
-        # Only replace colour for boundary pixels; definite fg keeps original.
-        fg[:, :, c] = np.where(a > 0.95, fg[:, :, c], fg_est)
+        fg_gauss[:, :, c] = numerator / denominator
+
+    # 3. Inverse-compositing where alpha is high enough to be stable (a > 0.1).
+    fg = img.copy()
+    boundary = (a > 0.05) & (a < 0.95)
+    if bg_color is not None:
+        inv_a = np.where(a > 0.1, 1.0 / np.maximum(a, 0.1), 0.0)
+        for c in range(img.shape[2]):
+            decontam = (img[:, :, c] - bg_color[c] * (1.0 - a)) * inv_a
+            # Blend: inverse-compositing for a>0.1, Gaussian for 0.05<a≤0.1.
+            use_inv = boundary & (a > 0.1)
+            use_gauss = boundary & (a <= 0.1)
+            fg[:, :, c] = np.where(use_inv, decontam,
+                          np.where(use_gauss, fg_gauss[:, :, c], img[:, :, c]))
+    else:
+        for c in range(img.shape[2]):
+            fg[:, :, c] = np.where(boundary, fg_gauss[:, :, c], img[:, :, c])
 
     return np.clip(fg, 0, 255).astype(np.uint8)
 

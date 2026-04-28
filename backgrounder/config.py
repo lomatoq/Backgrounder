@@ -70,7 +70,7 @@ class PipelineConfig:
     sdmatte_cache_dir: str = "~/.cache/backgrounder/sdmatte"
     sdmatte_variant: str = "sdmatte"  # "sdmatte" or "sdmatte_plus"
     sdmatte_prompt_mode: str = "trimap"  # bbox, mask, trimap, point
-    sdmatte_input_size: int = 1024
+    sdmatte_input_size: int = 768
     sdmatte_quality_trigger: float = 0.72
 
     # Phase 2: tile large images for 4K+ support.

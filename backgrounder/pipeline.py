@@ -145,17 +145,39 @@ class BackgroundRemovalPipeline:
         self._ready = True
         return self
 
+    # Maximum long-edge resolution before we auto-downsample.
+    # Keeps segmenter preprocessing fast and VRAM predictable.
+    _MAX_SIDE = 2048
+
     def process(self, image: Image.Image) -> MattingResult:
         """Run the full pipeline on a single PIL image."""
         if not self._ready:
             self.load()
 
+        orig_size = image.size  # (W, H)
+        image, scale = self._maybe_downscale(image)
+
         # 4K tiling: delegate tile processing to a simpler single-model call.
         W, H = image.size
         if self.config.tile_size > 0 and (W > self.config.tile_size or H > self.config.tile_size):
-            return self._process_tiled(image)
+            result = self._process_tiled(image)
+        else:
+            result = self._process_single(image)
 
-        return self._process_single(image)
+        # Upscale alpha/rgba back to original resolution if we downscaled.
+        if scale < 1.0:
+            result = result.upscale_to(orig_size)
+        return result
+
+    def _maybe_downscale(self, image: Image.Image) -> tuple[Image.Image, float]:
+        W, H = image.size
+        max_side = max(W, H)
+        if max_side <= self._MAX_SIDE:
+            return image, 1.0
+        scale = self._MAX_SIDE / max_side
+        new_w, new_h = int(round(W * scale)), int(round(H * scale))
+        print(f"[Backgrounder] Downscaling {W}×{H} → {new_w}×{new_h} (long edge capped at {self._MAX_SIDE}px)", flush=True)
+        return image.resize((new_w, new_h), Image.LANCZOS), scale
 
     def process_path(self, input_path: str | Path, output_path: str | Path) -> MattingResult:
         image = Image.open(input_path)
@@ -170,6 +192,8 @@ class BackgroundRemovalPipeline:
     def _process_single(self, image: Image.Image) -> MattingResult:
         meta: dict = {"device": self._device, "timings_ms": {}}
         t_total = time.perf_counter()
+        W, H = image.size
+        print(f"[Backgrounder] Processing {W}×{H} image on {self._device}", flush=True)
 
         # Stage A — Subject classification (Phase 2)
         classification = None
@@ -178,6 +202,7 @@ class BackgroundRemovalPipeline:
         subject_type = "generic"
 
         if self._classifier is not None:
+            print("[Stage A] Classifying subject type...", flush=True)
             with timer("stage_A_classify", meta["timings_ms"]):
                 if self.config.subject_type_override:
                     from backgrounder.classifier import (
@@ -206,6 +231,7 @@ class BackgroundRemovalPipeline:
             ]
 
         # Stage B — Coarse ensemble
+        print(f"[Stage B] Running segmenter ensemble ({len(self._segmenters)} models)...", flush=True)
         with timer("stage_B_ensemble", meta["timings_ms"]):
             alpha, uncertainty, outputs = ensemble_predict(
                 self._segmenters,
@@ -230,6 +256,7 @@ class BackgroundRemovalPipeline:
         # Stage C — Depth
         depth_edges: Optional[np.ndarray] = None
         if self._depth_model is not None:
+            print("[Stage C] Estimating depth...", flush=True)
             with timer("stage_C_depth", meta["timings_ms"]):
                 depth_map = self._depth_model.predict(image)
                 depth_edges = compute_depth_edges(depth_map)
@@ -250,6 +277,7 @@ class BackgroundRemovalPipeline:
             )
 
         # Stage D — Expert refinement (Phase 2: routed; Phase 1: depth-only)
+        print(f"[Stage D] Refining alpha (expert={expert})...", flush=True)
         with timer("stage_D_refine", meta["timings_ms"]):
             use_closed_form = (
                 self.config.use_closed_form_refine
@@ -321,6 +349,7 @@ class BackgroundRemovalPipeline:
             meta["sdmatte_score_before"] = round(report.score, 3)
             meta["sdmatte_trigger"] = round(sdmatte_trigger, 3)
             if report.score < sdmatte_trigger:
+                print(f"[Stage G0] SDMatte refining (score {report.score:.3f} < trigger {sdmatte_trigger:.2f})...", flush=True)
                 with timer("stage_G0_sdmatte", meta["timings_ms"]):
                     self._sdmatte.is_transparent = subject_type == "transparent"
                     alpha_sdmatte = self._sdmatte.refine(image, alpha, trimap)
@@ -381,7 +410,9 @@ class BackgroundRemovalPipeline:
                 foreground = estimate_foreground(image_np, alpha)
 
         rgba = compose_rgba(foreground, alpha)
-        meta["timings_ms"]["total"] = round((time.perf_counter() - t_total) * 1000, 1)
+        total_ms = round((time.perf_counter() - t_total) * 1000, 1)
+        meta["timings_ms"]["total"] = total_ms
+        print(f"[Backgrounder] Done in {total_ms/1000:.1f}s  quality={report.score:.3f}  subject={subject_type}", flush=True)
 
         return MattingResult(
             alpha=alpha,

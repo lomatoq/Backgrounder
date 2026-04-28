@@ -20,15 +20,15 @@ SUBJECT_TYPES = [
 
 # Text prompts fed to CLIP for zero-shot classification.
 _PROMPTS: Dict[str, str] = {
-    "portrait":      "a portrait photo of a person with visible hair",
-    "animal_fur":    "a photo of a furry animal or pet",
-    "product":       "a product photo on a plain or white background",
-    "plant_thin":    "a photo of a plant, tree, grass, or thin branches",
-    "transparent":   "a photo of transparent or glass objects, smoke, or water",
-    "vehicle":       "a photo of a car, motorcycle, or vehicle",
-    "anime":         "an anime drawing or cartoon illustration",
-    "complex_multi": "a complex scene with multiple foreground objects",
-    "generic":       "a photo of an object or person",
+    "portrait":      "a portrait photo of a person or model showing face and hair",
+    "animal_fur":    "a photo of a furry animal, pet, or wildlife",
+    "product":       "a product or object photo on a plain, white, or studio background",
+    "plant_thin":    "a photo of a plant, flower, tree, grass, or thin branches",
+    "transparent":   "a photo of transparent glass, crystal, smoke, or water",
+    "vehicle":       "a photo of a car, motorcycle, truck, or other vehicle",
+    "anime":         "an anime, cartoon, or digital illustration",
+    "complex_multi": "a fashion photo, full-body photo, or photo with multiple objects or complex clothing",
+    "generic":       "a simple photo with a single clear object",
 }
 
 # Segmenter weight overrides per subject type.
@@ -50,11 +50,11 @@ EXPERT_MAP: Dict[str, str] = {
     "portrait":      "vitmatte",
     "animal_fur":    "vitmatte",
     "plant_thin":    "vitmatte",
+    "complex_multi": "vitmatte",   # fashion/full-body shots have hair too
     "product":       "depth_only",
     "transparent":   "depth_only",
     "vehicle":       "depth_only",
     "anime":         "depth_only",
-    "complex_multi": "depth_only",
     "generic":       "depth_only",
 }
 

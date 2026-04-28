@@ -43,6 +43,26 @@ class MattingResult:
     def size(self) -> tuple[int, int]:
         return self.rgba.size  # (W, H)
 
+    def upscale_to(self, orig_size: tuple[int, int]) -> "MattingResult":
+        """Return a new MattingResult with alpha/rgba scaled to orig_size (W, H)."""
+        w, h = orig_size
+        alpha_up = np.array(
+            Image.fromarray((self.alpha * 255).astype(np.uint8), mode="L")
+            .resize(orig_size, Image.LANCZOS)
+        ).astype(np.float32) / 255.0
+        fg_up = np.array(
+            Image.fromarray(self.foreground).resize(orig_size, Image.LANCZOS)
+        )
+        a8 = (alpha_up * 255).astype(np.uint8)
+        rgba_up = Image.fromarray(np.dstack([fg_up, a8]), mode="RGBA")
+        return MattingResult(
+            alpha=alpha_up,
+            foreground=fg_up,
+            rgba=rgba_up,
+            quality_score=self.quality_score,
+            metadata={**self.metadata, "upscaled_from": self.rgba.size},
+        )
+
 
 @dataclass
 class SegmentationOutput:
