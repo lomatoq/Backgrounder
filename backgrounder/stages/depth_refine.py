@@ -150,7 +150,10 @@ def uncertainty_gated_sharpen(
 
 
 def smooth_alpha_boundary(alpha: np.ndarray, sigma: float = 0.5) -> np.ndarray:
-    """Light Gaussian smoothing on the alpha boundary to remove jaggedness."""
+    """Light Gaussian smoothing on the alpha boundary to remove jaggedness.
+    Pass sigma=0.0 to skip smoothing (for hard-edged objects that need crisp boundaries)."""
+    if sigma <= 0.0:
+        return alpha.astype(np.float32)
     uncertain = (alpha > 0.05) & (alpha < 0.95)
     smoothed = gaussian_filter(alpha, sigma=sigma)
     return np.where(uncertain, smoothed, alpha).astype(np.float32)
