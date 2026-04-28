@@ -106,14 +106,21 @@ class BackgroundRemovalPipeline:
             self._vitmatte.load()
 
         if self.config.use_sdmatte:
-            self._sdmatte = SDMatteRefiner(
-                cache_dir=self.config.sdmatte_cache_dir,
-                device=self._device,
-                variant=self.config.sdmatte_variant,
-                prompt_mode=self.config.sdmatte_prompt_mode,
-                input_size=self.config.sdmatte_input_size,
-            )
-            self._sdmatte.load()
+            if self._device != "cuda":
+                import warnings
+                warnings.warn(
+                    f"SDMatte requires CUDA but device is '{self._device}' — skipping. "
+                    "Install torch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu124"
+                )
+            else:
+                self._sdmatte = SDMatteRefiner(
+                    cache_dir=self.config.sdmatte_cache_dir,
+                    device=self._device,
+                    variant=self.config.sdmatte_variant,
+                    prompt_mode=self.config.sdmatte_prompt_mode,
+                    input_size=self.config.sdmatte_input_size,
+                )
+                self._sdmatte.load()
 
         if self.config.use_classifier:
             from backgrounder.classifier import SubjectClassifier
