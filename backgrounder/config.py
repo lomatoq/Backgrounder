@@ -61,19 +61,14 @@ class PipelineConfig:
     use_vitmatte: bool = False
     vitmatte_allow_nc: bool = False
 
-    # Phase 3: SDMatte / LiteSDMatte diffusion refiner.
-    # Setup (all three paths required):
-    #   1. sdmatte_repo_path    — clone https://github.com/vivoCameraResearch/SDMatte
-    #   2. sdmatte_model_path   — download HF model locally:
-    #                             huggingface-cli download LongfeiHuang/LiteSDMatte --local-dir <path>
-    #   3. sdmatte_checkpoint_path — path to LiteSDMatte.pth (usually inside sdmatte_model_path)
-    # Also requires: detectron2, diffusers, accelerate, CUDA device.
+    # Phase 3: SDMatte diffusion refiner (MIT, ICCV 2025).
+    # Bundled — no external repo needed. Auto-downloads weights (~5 GB) and
+    # SD 2.1 architecture configs to sdmatte_cache_dir on first use.
+    # Requires: CUDA, diffusers, accelerate, safetensors.
     use_sdmatte: bool = False
-    sdmatte_repo_path: str | None = None
-    sdmatte_model_path: str | None = None        # local dir with vae/, unet/, tokenizer/ subfolders
-    sdmatte_checkpoint_path: str | None = None
-    sdmatte_variant: str = "lite"  # "lite" or "sdmatte"
-    sdmatte_prompt_mode: str = "bbox"  # bbox, mask, trimap, point
+    sdmatte_cache_dir: str = "~/.cache/backgrounder/sdmatte"
+    sdmatte_variant: str = "sdmatte"  # "sdmatte" or "sdmatte_plus"
+    sdmatte_prompt_mode: str = "trimap"  # bbox, mask, trimap, point
     sdmatte_input_size: int = 1024
     sdmatte_quality_trigger: float = 0.72
 

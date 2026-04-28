@@ -7,7 +7,6 @@ Quick Gradio demo for the Backgrounder pipeline.
 from __future__ import annotations
 import json
 import os
-import platform
 
 import numpy as np
 from PIL import Image
@@ -18,39 +17,20 @@ _pipeline_cfg: dict = {}
 
 
 def _sdmatte_ui_defaults() -> dict:
-    repo_path = os.environ.get("BACKGROUNDER_SDMATTE_REPO", "")
-    model_path = os.environ.get("BACKGROUNDER_SDMATTE_MODEL", "")
-    checkpoint_path = os.environ.get("BACKGROUNDER_SDMATTE_CHECKPOINT", "")
-    system = platform.system().lower()
-
+    cache_dir = os.environ.get("BACKGROUNDER_SDMATTE_CACHE", "~/.cache/backgrounder/sdmatte")
     cuda_available = False
     try:
         import torch
         cuda_available = torch.cuda.is_available()
     except Exception:
         cuda_available = False
-
-    ready = (
-        cuda_available
-        and bool(repo_path)
-        and bool(checkpoint_path)
-    )
-    if ready:
-        status = "SDMatte ready: CUDA + env paths detected."
+    if cuda_available:
+        status = "SDMatte ready (CUDA detected). Weights auto-download on first use (~5 GB)."
     else:
-        missing = []
-        if not cuda_available:
-            missing.append("CUDA")
-        if not repo_path:
-            missing.append("BACKGROUNDER_SDMATTE_REPO")
-        if not checkpoint_path:
-            missing.append("BACKGROUNDER_SDMATTE_CHECKPOINT")
-        status = "SDMatte disabled — missing: " + ", ".join(missing) + "."
+        status = "SDMatte requires CUDA — disabled on this device."
     return {
-        "enabled": ready,
-        "repo_path": repo_path,
-        "model_path": model_path,
-        "checkpoint_path": checkpoint_path,
+        "enabled": False,           # off by default — user opts in
+        "cache_dir": cache_dir,
         "status": status,
     }
 
@@ -63,9 +43,7 @@ def _get_pipeline(
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
-    sdmatte_repo_path: str,
-    sdmatte_model_path: str,
-    sdmatte_checkpoint_path: str,
+    sdmatte_cache_dir: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
     use_sam2: bool,
@@ -76,8 +54,7 @@ def _get_pipeline(
     cfg_key = (
         device, segmenters, use_depth, use_classifier,
         use_closed_form, use_uncertainty_sharpen,
-        use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
-        sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
+        use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
     if _pipeline is not None and _pipeline_cfg.get("key") == cfg_key:
@@ -94,9 +71,7 @@ def _get_pipeline(
         use_closed_form_refine=use_closed_form,
         use_uncertainty_sharpen=use_uncertainty_sharpen,
         use_sdmatte=use_sdmatte,
-        sdmatte_repo_path=sdmatte_repo_path or None,
-        sdmatte_model_path=sdmatte_model_path or None,
-        sdmatte_checkpoint_path=sdmatte_checkpoint_path or None,
+        sdmatte_cache_dir=sdmatte_cache_dir or "~/.cache/backgrounder/sdmatte",
         sdmatte_variant=sdmatte_variant,
         sdmatte_prompt_mode=sdmatte_prompt_mode,
         use_sam2=use_sam2,
@@ -119,9 +94,7 @@ def remove_background(
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
-    sdmatte_repo_path: str,
-    sdmatte_model_path: str,
-    sdmatte_checkpoint_path: str,
+    sdmatte_cache_dir: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
     use_sam2: bool,
@@ -138,8 +111,7 @@ def remove_background(
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
         use_closed_form, use_uncertainty_sharpen,
-        use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
-        sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
+        use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
 
@@ -221,31 +193,20 @@ def build_ui():
                     gr.Markdown(sdmatte_defaults["status"])
                     use_sdmatte = gr.Checkbox(
                         value=sdmatte_defaults["enabled"],
-                        label="SDMatte / LiteSDMatte diffusion refiner",
-                        info="Requires CUDA, detectron2, local SDMatte repo and .pth checkpoint",
+                        label="SDMatte diffusion refiner (auto-downloads ~5 GB on first use)",
+                        info="Triggers when quality < 0.72. Requires CUDA + diffusers.",
                     )
-                    sdmatte_repo_path = gr.Textbox(
-                        value=sdmatte_defaults["repo_path"],
-                        label="SDMatte code repo path (vivoCameraResearch/SDMatte clone)",
-                        placeholder="/path/to/SDMatte",
-                    )
-                    sdmatte_model_path = gr.Textbox(
-                        value=sdmatte_defaults["model_path"],
-                        label="SDMatte model dir (huggingface-cli download LongfeiHuang/LiteSDMatte --local-dir …)",
-                        placeholder="/path/to/LiteSDMatte_model",
-                        info="Leave blank to auto-derive from checkpoint parent folder",
-                    )
-                    sdmatte_checkpoint_path = gr.Textbox(
-                        value=sdmatte_defaults["checkpoint_path"],
-                        label="SDMatte checkpoint path (.pth file)",
-                        placeholder="/path/to/LiteSDMatte_model/LiteSDMatte.pth",
+                    sdmatte_cache_dir = gr.Textbox(
+                        value=sdmatte_defaults["cache_dir"],
+                        label="SDMatte cache dir (weights + SD2.1 configs)",
+                        placeholder="~/.cache/backgrounder/sdmatte",
                     )
                     sdmatte_variant = gr.Radio(
-                        ["lite", "sdmatte"], value="lite", label="SDMatte variant",
+                        ["sdmatte", "sdmatte_plus"], value="sdmatte", label="SDMatte variant",
                     )
                     sdmatte_prompt_mode = gr.Radio(
-                        ["bbox", "mask", "trimap", "point"],
-                        value="bbox", label="SDMatte prompt",
+                        ["trimap", "bbox", "mask", "point"],
+                        value="trimap", label="SDMatte prompt",
                     )
                     use_sam2 = gr.Checkbox(
                         value=False,
@@ -271,8 +232,7 @@ def build_ui():
         _inputs = [
             inp, device, segmenters, use_depth, use_classifier,
             use_closed_form, use_uncertainty_sharpen,
-            use_sdmatte, sdmatte_repo_path, sdmatte_model_path,
-            sdmatte_checkpoint_path, sdmatte_variant, sdmatte_prompt_mode,
+            use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
         ]
 
