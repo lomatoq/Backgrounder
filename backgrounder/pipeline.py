@@ -437,19 +437,35 @@ class BackgroundRemovalPipeline:
 
 
 def _looks_transparent(image: Image.Image, alpha: np.ndarray) -> bool:
-    """Cheap post-ensemble heuristic for tinted glass/plastic objects."""
+    """
+    Heuristic for glass / water / smoke — NOT sheer fashion fabric.
+
+    Glass is characterised by:
+      - Many semi-transparent foreground pixels  (high semi_ratio)
+      - LOW colour saturation (grey/white, not patterned fabric)
+      - HIGH brightness  (light passes through)
+
+    Complex fashion with mesh inserts has high saturation & mixed colours,
+    so it must NOT be flagged as transparent.
+    """
     fg = alpha > 0.05
-    if fg.sum() < max(64, alpha.size * 0.02):
+    if fg.sum() < max(64, alpha.size * 0.03):
         return False
 
-    semi = (alpha > 0.18) & (alpha < 0.92) & fg
+    semi = (alpha > 0.20) & (alpha < 0.90) & fg
     semi_ratio = float(semi.sum() / (fg.sum() + 1e-8))
-    if semi_ratio < 0.18:
+    if semi_ratio < 0.35:          # raise from 0.18 → need majority semi-transparent
         return False
 
     rgb = np.asarray(image.convert("RGB")).astype(np.float32) / 255.0
     maxc = rgb.max(axis=2)
     minc = rgb.min(axis=2)
     saturation = (maxc - minc) / (maxc + 1e-6)
-    sat_mean = float(saturation[fg].mean())
-    return sat_mean > 0.22
+    brightness  = rgb.mean(axis=2)
+
+    sat_mean    = float(saturation[fg].mean())
+    bright_mean = float(brightness[fg].mean())
+
+    # Glass/smoke: low saturation + high brightness (light, achromatic)
+    # Fashion fabric: colourful or dark → sat_mean high or bright_mean low
+    return sat_mean < 0.18 and bright_mean > 0.55

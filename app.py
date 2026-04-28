@@ -40,6 +40,7 @@ def _get_pipeline(
     segmenters: str,
     use_depth: bool,
     use_classifier: bool,
+    use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
@@ -53,7 +54,7 @@ def _get_pipeline(
 
     cfg_key = (
         device, segmenters, use_depth, use_classifier,
-        use_closed_form, use_uncertainty_sharpen,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -68,6 +69,8 @@ def _get_pipeline(
         device=Device(device),
         use_depth=use_depth,
         use_classifier=use_classifier,
+        use_vitmatte=use_vitmatte,
+        vitmatte_allow_nc=use_vitmatte,   # UI checkbox == accepting NC license
         use_closed_form_refine=use_closed_form,
         use_uncertainty_sharpen=use_uncertainty_sharpen,
         use_sdmatte=use_sdmatte,
@@ -91,6 +94,7 @@ def remove_background(
     segmenters: str,
     use_depth: bool,
     use_classifier: bool,
+    use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
@@ -110,7 +114,7 @@ def remove_background(
 
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
-        use_closed_form, use_uncertainty_sharpen,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -183,7 +187,12 @@ def build_ui():
                     )
                     use_depth = gr.Checkbox(value=True, label="Depth Anything V2-Small")
                     use_classifier = gr.Checkbox(value=True, label="CLIP subject classifier")
-                    use_closed_form = gr.Checkbox(value=True, label="Closed-form matting refine")
+                    use_vitmatte = gr.Checkbox(
+                        value=True,
+                        label="ViTMatte refiner — best for hair/fur (NC weights: non-commercial only)",
+                        info="hustvl/vitmatte-small-composition-1k — Adobe Composition-1K licence",
+                    )
+                    use_closed_form = gr.Checkbox(value=True, label="Closed-form matting (products/vehicles)")
                     use_uncertainty_sharpen = gr.Checkbox(value=True, label="Uncertainty-gated sharpening")
                     subject_override = gr.Dropdown(
                         subject_choices, value="auto", label="Subject type override",
@@ -231,7 +240,7 @@ def build_ui():
 
         _inputs = [
             inp, device, segmenters, use_depth, use_classifier,
-            use_closed_form, use_uncertainty_sharpen,
+            use_vitmatte, use_closed_form, use_uncertainty_sharpen,
             use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
         ]

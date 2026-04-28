@@ -57,9 +57,10 @@ class PipelineConfig:
     subject_type_override: str | None = None
 
     # Phase 2: ViTMatte trimap-based refiner for hair/fur.
-    # Weights are NC (Adobe Composition-1k) — set True only if you accept that.
-    use_vitmatte: bool = False
-    vitmatte_allow_nc: bool = False
+    # Weights trained on Adobe Composition-1k — NON-COMMERCIAL use only.
+    # Set vitmatte_allow_nc=True to confirm you accept that restriction.
+    use_vitmatte: bool = True
+    vitmatte_allow_nc: bool = False   # user must opt-in to NC weights
 
     # Phase 3: SDMatte diffusion refiner (MIT, ICCV 2025).
     # Bundled — no external repo needed. Auto-downloads weights (~5 GB) and
