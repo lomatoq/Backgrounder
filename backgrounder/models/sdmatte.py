@@ -122,16 +122,8 @@ class SDMatteRefiner:
                 break
         self._model.load_state_dict(state_dict, strict=False)
         self._model.eval()
-        self._model.to(self.device)
-
-        # Memory-saving sliced attention on CUDA.
-        try:
-            from diffusers.models.attention_processor import SlicedAttnProcessor
-            unet = getattr(self._model, "unet", None)
-            if unet is not None and hasattr(unet, "set_attn_processor"):
-                unet.set_attn_processor(SlicedAttnProcessor(slice_size=1))
-        except Exception:
-            pass
+        # fp16 halves VRAM usage and ~2× inference speed on CUDA.
+        self._model.half().to(self.device)
 
         self._loaded = True
         return self
@@ -218,7 +210,12 @@ class SDMatteRefiner:
         if self.prompt_mode == "point" and point_coords_t is not None:
             data["point_coords"] = point_coords_t
 
-        with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16):
+        # Model is fp16; cast all tensor inputs accordingly.
+        data = {
+            k: v.half() if isinstance(v, torch.Tensor) and v.is_floating_point() else v
+            for k, v in data.items()
+        }
+        with torch.no_grad():
             pred = self._model(data)
 
         # pred is [B, 1, H, W] in [0, 1]
