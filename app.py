@@ -98,6 +98,7 @@ def remove_background(
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
     use_sdmatte: bool,
+    force_sdmatte: bool,
     sdmatte_cache_dir: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
@@ -119,8 +120,9 @@ def remove_background(
         use_sam2, use_owlv2,
     )
 
-    # Subject type override
+    # Per-request settings (don't require model reload)
     pipeline.config.subject_type_override = subject_override if subject_override != "auto" else None
+    pipeline.config.force_sdmatte = force_sdmatte and use_sdmatte
 
     result = pipeline.process(image)
 
@@ -132,6 +134,8 @@ def remove_background(
         "subject_type": result.metadata.get("subject_type", "n/a"),
         "expert_used": result.metadata.get("expert", "n/a"),
         "sdmatte_used": result.metadata.get("sdmatte_used", False),
+        "sdmatte_forced": result.metadata.get("sdmatte_forced", False),
+        "sdmatte_skipped": result.metadata.get("sdmatte_skipped", None),
         "sam2_used": result.metadata.get("sam2_used", False),
         "timings_ms": result.metadata.get("timings_ms", {}),
         "quality_detail": result.metadata.get("quality", ""),
@@ -160,7 +164,7 @@ def build_ui():
     subject_choices = [
         "auto", "portrait", "animal_fur", "product",
         "plant_thin", "transparent", "vehicle", "anime",
-        "complex_multi", "generic",
+        "complex_multi", "text_logo", "generic",
     ]
 
     with gr.Blocks(title="Backgrounder", theme=gr.themes.Soft()) as demo:
@@ -205,6 +209,11 @@ def build_ui():
                         label="SDMatte diffusion refiner (auto-downloads ~5 GB on first use)",
                         info="Triggers when quality < 0.72. Requires CUDA + diffusers.",
                     )
+                    force_sdmatte = gr.Checkbox(
+                        value=False,
+                        label="Force SDMatte (ignore quality gate)",
+                        info="Run SDMatte on every image regardless of quality score. Only active when SDMatte is enabled.",
+                    )
                     sdmatte_cache_dir = gr.Textbox(
                         value=sdmatte_defaults["cache_dir"],
                         label="SDMatte cache dir (weights + SD2.1 configs)",
@@ -241,7 +250,7 @@ def build_ui():
         _inputs = [
             inp, device, segmenters, use_depth, use_classifier,
             use_vitmatte, use_closed_form, use_uncertainty_sharpen,
-            use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
+            use_sdmatte, force_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
         ]
 

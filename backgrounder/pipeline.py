@@ -285,10 +285,13 @@ class BackgroundRemovalPipeline:
 
         # Stage C — Trimap
         # Hair/fur/plants need a wider unknown band to capture fine strands.
+        # Text/logos need a tighter band — wide dilation pulls in solid background.
         _HAIR_TYPES = {"portrait", "animal_fur", "plant_thin"}
         trimap_dilation = self.config.trimap_dilation
         if subject_type in _HAIR_TYPES:
             trimap_dilation = max(trimap_dilation, 20)
+        elif subject_type == "text_logo":
+            trimap_dilation = min(trimap_dilation, 5)
 
         with timer("stage_C_trimap", meta["timings_ms"]):
             trimap = generate_trimap(
@@ -316,7 +319,9 @@ class BackgroundRemovalPipeline:
                 closed_form_max_pixels=self.config.closed_form_max_pixels,
             )
 
-        if self.config.use_uncertainty_sharpen and subject_type != "transparent":
+        # text_logo already has binary-snapped crisp edges from color_key;
+        # uncertainty sharpening would distort those clean edges.
+        if self.config.use_uncertainty_sharpen and subject_type not in ("transparent", "text_logo"):
             with timer("stage_D2_uncertainty_sharpen", meta["timings_ms"]):
                 alpha = uncertainty_gated_sharpen(
                     alpha,
@@ -362,6 +367,7 @@ class BackgroundRemovalPipeline:
 
         # Stage G0 — SDMatte diffusion refinement (optional, heavy CUDA path)
         # Hard subjects get a raised trigger so SDMatte runs unless quality is already excellent.
+        # force_sdmatte bypasses the quality gate entirely (user opt-in from UI).
         _HARD_SUBJECTS = {"portrait", "animal_fur", "complex_multi", "plant_thin"}
         sdmatte_trigger = self.config.sdmatte_quality_trigger
         if subject_type in _HARD_SUBJECTS:
@@ -370,8 +376,10 @@ class BackgroundRemovalPipeline:
         if self._sdmatte is not None:
             meta["sdmatte_score_before"] = round(report.score, 3)
             meta["sdmatte_trigger"] = round(sdmatte_trigger, 3)
-            if report.score < sdmatte_trigger:
-                print(f"[Stage G0] SDMatte refining (score {report.score:.3f} < trigger {sdmatte_trigger:.2f})...", flush=True)
+            run_sdmatte = self.config.force_sdmatte or report.score < sdmatte_trigger
+            if run_sdmatte:
+                reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
+                print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
                 with timer("stage_G0_sdmatte", meta["timings_ms"]):
                     self._sdmatte.is_transparent = subject_type == "transparent"
                     alpha_sdmatte = self._sdmatte.refine(image, alpha, trimap)
@@ -383,6 +391,7 @@ class BackgroundRemovalPipeline:
                         report = report_sdmatte
                         meta["quality"] = str(report_sdmatte)
                     meta["sdmatte_used"] = True
+                    meta["sdmatte_forced"] = self.config.force_sdmatte
                     meta["sdmatte_score"] = round(report_sdmatte.score, 3)
                     meta["sdmatte_accepted"] = report_sdmatte.score >= report.score
             else:

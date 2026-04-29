@@ -37,10 +37,11 @@ def score_alpha(
     Composite quality score from four orthogonal signals.
 
     edge_sharpness  — mean Sobel magnitude in α∈(0.05, 0.95); rewards crisp boundaries.
-                      Weight lowered vs v1: soft alpha at hair tips is correct, not bad.
     depth_edge_iou  — IoU of dilated alpha-edges vs depth-edges; catches halo/low-contrast.
+                      Skipped (weight redistributed) when no depth model is available,
+                      because the neutral 0.5 default would artificially inflate scores
+                      and cause SDMatte to be skipped on images that need it.
     confidence_mean — mean BEN2 confidence in uncertain band; rewards model certainty.
-                      Primary signal — high model confidence → reliable mask.
     smoothness      — 1 − jaggedness; rewards smooth, non-oscillating boundary.
     """
     uncertain = (alpha > 0.05) & (alpha < 0.95)
@@ -54,7 +55,11 @@ def score_alpha(
     edge_sharpness_norm = min(edge_sharpness / 0.35, 1.0)
 
     # --- 2. Depth-edge IoU ---
-    depth_edge_iou = 0.5  # neutral default when no depth available
+    # When depth is unavailable, skip this term entirely and redistribute its
+    # weight to confidence — the most reliable signal we have.
+    # Using a neutral 0.5 default inflates the score and causes SDMatte to be
+    # skipped on images where depth wasn't computed.
+    depth_edge_iou = None
     if depth_edges is not None:
         alpha_edges = grad_mag > 0.08
         depth_strong = depth_edges > 0.15
@@ -80,12 +85,23 @@ def score_alpha(
         jaggedness = float((reversals != 0).mean())
     smoothness_norm = max(0.0, 1.0 - jaggedness * 2)
 
-    score = (
-        w_sharpness * edge_sharpness_norm
-        + w_depth_iou * depth_edge_iou
-        + w_confidence * confidence_mean
-        + w_smoothness * smoothness_norm
-    )
+    if depth_edge_iou is not None:
+        score = (
+            w_sharpness * edge_sharpness_norm
+            + w_depth_iou * depth_edge_iou
+            + w_confidence * confidence_mean
+            + w_smoothness * smoothness_norm
+        )
+    else:
+        # No depth: add the depth weight directly into confidence weight.
+        # The three remaining weights (sharpness + confidence+depth + smoothness)
+        # still sum to 1.0, so the score stays in [0, 1].
+        score = (
+            w_sharpness * edge_sharpness_norm
+            + (w_confidence + w_depth_iou) * confidence_mean
+            + w_smoothness * smoothness_norm
+        )
+        depth_edge_iou = 0.5  # keep the field populated for reporting
 
     return QualityReport(
         score=float(np.clip(score, 0.0, 1.0)),

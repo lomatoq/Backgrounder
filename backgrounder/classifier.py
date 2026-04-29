@@ -15,6 +15,7 @@ SUBJECT_TYPES = [
     "vehicle",        # car, bike — BiRefNet-heavy
     "anime",          # cartoon / illustration
     "complex_multi",  # multiple objects / occlusion
+    "text_logo",      # text, logo, icon on solid/plain background — color-key extraction
     "generic",        # fallback
 ]
 
@@ -28,6 +29,7 @@ _PROMPTS: Dict[str, str] = {
     "vehicle":       "a photo of a car, motorcycle, truck, bicycle, or other vehicle",
     "anime":         "an anime drawing, cartoon character, or digital illustration",
     "complex_multi": "a group photo or scene with multiple people or multiple separate foreground subjects",
+    "text_logo":     "text, typography, a logo, icon, wordmark, or graphic design on a solid plain background",
     "generic":       "a miscellaneous photo that does not fit other categories",
 }
 
@@ -42,6 +44,9 @@ SEGMENTER_WEIGHTS: Dict[str, Dict[str, float]] = {
     "vehicle":       {"birefnet_hr": 0.50, "ben2": 0.35, "inspyrenet": 0.15},
     "anime":         {"birefnet_hr": 0.40, "ben2": 0.30, "inspyrenet": 0.30},
     "complex_multi": {"birefnet_hr": 0.50, "ben2": 0.40, "inspyrenet": 0.10},
+    # text_logo: BEN2 is best at clean-boundary objects; neural result used only as
+    # background hint for the color-key extractor in Stage D.
+    "text_logo":     {"birefnet_hr": 0.25, "ben2": 0.65, "inspyrenet": 0.10},
     "generic":       {"birefnet_hr": 0.40, "ben2": 0.40, "inspyrenet": 0.20},
 }
 
@@ -55,6 +60,7 @@ EXPERT_MAP: Dict[str, str] = {
     "vehicle":       "depth_only",
     "anime":         "depth_only",
     "complex_multi": "depth_only",   # multi-object scenes need crisp edges, not ViTMatte blur
+    "text_logo":     "color_key",    # background-color-distance extraction
     "generic":       "depth_only",
 }
 

@@ -67,6 +67,8 @@ class PipelineConfig:
     # SD 2.1 architecture configs to sdmatte_cache_dir on first use.
     # Requires: CUDA, diffusers, accelerate, safetensors.
     use_sdmatte: bool = False
+    # When True, run SDMatte regardless of quality score (user "force" mode).
+    force_sdmatte: bool = False
     sdmatte_cache_dir: str = "~/.cache/backgrounder/sdmatte"
     sdmatte_variant: str = "sdmatte"  # "sdmatte" or "sdmatte_plus"
     sdmatte_prompt_mode: str = "trimap"  # bbox, mask, trimap, point
