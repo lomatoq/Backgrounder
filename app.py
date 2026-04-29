@@ -43,6 +43,7 @@ def _get_pipeline(
     use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
+    use_tta: bool,
     use_sdmatte: bool,
     sdmatte_cache_dir: str,
     sdmatte_variant: str,
@@ -54,7 +55,7 @@ def _get_pipeline(
 
     cfg_key = (
         device, segmenters, use_depth, use_classifier,
-        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -70,9 +71,10 @@ def _get_pipeline(
         use_depth=use_depth,
         use_classifier=use_classifier,
         use_vitmatte=use_vitmatte,
-        vitmatte_allow_nc=use_vitmatte,   # UI checkbox == accepting NC license
+        vitmatte_allow_nc=use_vitmatte,
         use_closed_form_refine=use_closed_form,
         use_uncertainty_sharpen=use_uncertainty_sharpen,
+        use_tta=use_tta,
         use_sdmatte=use_sdmatte,
         sdmatte_cache_dir=sdmatte_cache_dir or "~/.cache/backgrounder/sdmatte",
         sdmatte_variant=sdmatte_variant,
@@ -97,6 +99,7 @@ def remove_background(
     use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
+    use_tta: bool,
     use_sdmatte: bool,
     force_sdmatte: bool,
     sdmatte_cache_dir: str,
@@ -115,7 +118,7 @@ def remove_background(
 
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
-        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -133,6 +136,7 @@ def remove_background(
         "quality_score": round(result.quality_score, 3),
         "subject_type": result.metadata.get("subject_type", "n/a"),
         "expert_used": result.metadata.get("expert", "n/a"),
+        "tta": result.metadata.get("tta", False),
         "sdmatte_used": result.metadata.get("sdmatte_used", False),
         "sdmatte_forced": result.metadata.get("sdmatte_forced", False),
         "sdmatte_skipped": result.metadata.get("sdmatte_skipped", None),
@@ -198,6 +202,12 @@ def build_ui():
                     )
                     use_closed_form = gr.Checkbox(value=True, label="Closed-form matting (products/vehicles)")
                     use_uncertainty_sharpen = gr.Checkbox(value=True, label="Uncertainty-gated sharpening")
+                    use_tta = gr.Checkbox(
+                        value=False,
+                        label="Test-time augmentation — TTA  (2× slower Stage B, better for dark/low-contrast)",
+                        info="Runs each segmenter on original + horizontal flip, averages the results. "
+                             "Helps Spider-Man-on-dark-background type images.",
+                    )
                     subject_override = gr.Dropdown(
                         subject_choices, value="auto", label="Subject type override",
                     )
@@ -250,6 +260,7 @@ def build_ui():
         _inputs = [
             inp, device, segmenters, use_depth, use_classifier,
             use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+            use_tta,
             use_sdmatte, force_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
         ]

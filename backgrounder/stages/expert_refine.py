@@ -3,7 +3,7 @@ from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import uniform_filter
+from scipy.ndimage import uniform_filter, sobel
 
 from backgrounder.stages.depth_refine import smooth_alpha_boundary
 
@@ -25,55 +25,46 @@ def expert_refine(
     Route to the appropriate Stage-D refiner based on subject type.
 
     expert = "vitmatte"   → ViTMatte (hair/fur); fallback: medium guided filter
-    expert = "depth_only" → tight guided filter for crisp hard edges
+    expert = "depth_only" → multi-scale guided filter for crisp hard edges
     expert = "color_key"  → background-color-distance extraction (text/logos)
     """
     unknown = (trimap == 128).astype(np.float32)
     image_np = np.array(image.convert("RGB")).astype(np.float32) / 255.0
 
     if expert == "color_key":
-        # Background-color-keying: best for text/logos on near-solid backgrounds.
-        # The neural coarse alpha is used only to identify which pixels are
-        # definitely background — then we re-extract alpha from color distance.
         alpha_ck = _color_key_extract(image, alpha)
-        # Blend: 75% color-key, 25% neural. Keeps correct mask shape on images
-        # where the background is not perfectly uniform.
         alpha = 0.75 * alpha_ck + 0.25 * alpha
-        # Guided filter to anti-alias text/logo edges.
+        # Fine-scale guided filter for text edges — don't blend scales here,
+        # text edges need maximum sharpness.
         alpha_gf = _guided_filter(image_np, alpha, r=2, eps=5e-5)
         alpha = np.where((alpha > 0.03) & (alpha < 0.97), alpha_gf, alpha)
-        # Snap to binary — text edges should be crisp.
         alpha = np.where(alpha > 0.88, 1.0, alpha)
         alpha = np.where(alpha < 0.12, 0.0, alpha)
         return np.clip(alpha, 0.0, 1.0).astype(np.float32)
 
     elif expert == "vitmatte" and vitmatte is not None:
         alpha = vitmatte.refine(image, alpha, trimap)
-        # Light guided-filter pass to clean residual blur at hair boundary.
+        # Standard guided filter after ViTMatte — ViTMatte already handles
+        # fine strand detail so a medium-scale pass is sufficient.
         alpha_gf = _guided_filter(image_np, alpha, r=4, eps=1e-3)
         alpha = np.where(unknown > 0.5, alpha_gf, alpha)
         return smooth_alpha_boundary(alpha, sigma=0.5)
 
     elif expert == "vitmatte":
-        # ViTMatte not loaded — guided filter is the next best for hair/fur.
-        alpha_gf = _guided_filter(image_np, alpha, r=6, eps=5e-4)
+        # ViTMatte not loaded: multi-scale guided filter as best alternative.
+        alpha_gf = multiscale_guided_filter(image_np, alpha)
         alpha = np.where(unknown > 0.5, alpha_gf, alpha)
         return smooth_alpha_boundary(alpha, sigma=0.5)
 
     else:
         # depth_only — hard-edged objects (products, vehicles, generic).
-        # use_closed_form=True → tighter params (sharper); False → relaxed.
-        r   = 3   if use_closed_form else 6
-        eps = 1e-4 if use_closed_form else 8e-4
-        alpha_gf = _guided_filter(image_np, alpha, r=r, eps=eps)
+        # Multi-scale guided filter: fine scale for crisp product edges,
+        # coarse scale for smooth object bodies without halos.
+        alpha_gf = multiscale_guided_filter(image_np, alpha)
         alpha = np.where(unknown > 0.5, alpha_gf, alpha)
 
-        # Snap nearly-solid pixels to binary: removes semi-transparent fringe
-        # that should be fully FG or BG on hard-edged objects.
         alpha = np.where((alpha > 0.92) & (unknown > 0.5), 1.0, alpha)
         alpha = np.where((alpha < 0.08) & (unknown > 0.5), 0.0, alpha)
-
-        # No Gaussian smoothing for hard edges — preserves crisp product boundaries.
         return smooth_alpha_boundary(alpha, sigma=0.0)
 
 
@@ -96,6 +87,48 @@ def _guided_filter(
     a = cov_Ip / (var_I + eps)
     b = mean_p - a * mean_I
     return np.clip(box(a) * I + box(b), 0.0, 1.0).astype(np.float32)
+
+
+def multiscale_guided_filter(
+    guide: np.ndarray,  # H×W×3 float32 [0,1]
+    src: np.ndarray,    # H×W   float32 [0,1]
+) -> np.ndarray:
+    """
+    Gradient-weighted multi-scale guided filter fusion.
+
+    Three guided filters run simultaneously at different radii; their outputs
+    are blended per-pixel based on local alpha gradient magnitude:
+
+      fine   (r=2,  eps=1e-5) — dominates at sharp object boundaries.
+                                Preserves sub-pixel detail, avoids over-smoothing edges.
+      medium (r=7,  eps=5e-4) — covers mid-gradient regions (semi-transparent areas,
+                                soft shadows, slight defocus at boundary).
+      coarse (r=18, eps=5e-3) — dominates in smooth foreground/background areas.
+                                Suppresses noisy speckle in glass bodies and sky.
+
+    Blend weights are quadratic in gradient magnitude g ∈ [0,1]:
+        w_fine   = g²           (→1 at crisp edges, →0 in smooth areas)
+        w_coarse = (1-g)²       (→1 in smooth areas, →0 at crisp edges)
+        w_medium = 2g(1-g)      (peaks at g=0.5, zero at both extremes)
+    Sum is always exactly 1.0 at every pixel (g² + 2g(1-g) + (1-g)² = 1).
+    """
+    fine   = _guided_filter(guide, src, r=2,  eps=1e-5)
+    medium = _guided_filter(guide, src, r=7,  eps=5e-4)
+    coarse = _guided_filter(guide, src, r=18, eps=5e-3)
+
+    gx = np.abs(sobel(src.astype(np.float64), axis=1))
+    gy = np.abs(sobel(src.astype(np.float64), axis=0))
+    g = np.sqrt(gx ** 2 + gy ** 2)
+    g = (g / (g.max() + 1e-8)).astype(np.float32)
+
+    w_fine   = g * g
+    w_coarse = (1.0 - g) * (1.0 - g)
+    w_medium = 2.0 * g * (1.0 - g)  # = 1 - w_fine - w_coarse
+
+    return np.clip(
+        w_fine * fine + w_medium * medium + w_coarse * coarse,
+        0.0, 1.0,
+    ).astype(np.float32)
 
 
 def _color_key_extract(

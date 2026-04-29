@@ -75,6 +75,10 @@ class PipelineConfig:
     sdmatte_input_size: int = 768
     sdmatte_quality_trigger: float = 0.72
 
+    # Test-Time Augmentation: run ensemble on original + horizontal flip, average.
+    # Improves quality on low-contrast / dark-on-dark subjects (~2× Stage-B time).
+    use_tta: bool = False
+
     # Phase 2: tile large images for 4K+ support.
     # 0 = disabled; >0 = tile_size in pixels.
     tile_size: int = 0

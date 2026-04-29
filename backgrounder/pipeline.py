@@ -255,14 +255,19 @@ class BackgroundRemovalPipeline:
             ]
 
         # Stage B — Coarse ensemble
-        print(f"[Stage B] Running segmenter ensemble ({len(self._segmenters)} models)...", flush=True)
+        tta_on = self.config.use_tta
+        tta_tag = " +TTA" if tta_on else ""
+        print(f"[Stage B] Running segmenter ensemble ({len(self._segmenters)} models{tta_tag})...", flush=True)
         with timer("stage_B_ensemble", meta["timings_ms"]):
             alpha, uncertainty, outputs = ensemble_predict(
                 self._segmenters,
                 image,
                 weights=seg_weights,
                 parallel=True,
+                tta=tta_on,
             )
+        if tta_on:
+            meta["tta"] = True
 
         # Note: a previous auto-transparency heuristic was removed. It misfired
         # on white text, light-colored objects with anti-aliased edges, etc.
