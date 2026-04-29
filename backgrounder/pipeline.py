@@ -154,6 +154,30 @@ class BackgroundRemovalPipeline:
         if not self._ready:
             self.load()
 
+        # RGBA passthrough: if the image already has meaningful transparency,
+        # the user supplied an already-extracted asset (logo, UI element,
+        # screenshot from a transparent PNG). Re-segmenting it would composite
+        # the alpha against black and confuse BiRefNet/BEN2 (semi-transparent
+        # glow pixels become dark, get classified as background, and the
+        # output alpha collapses). Preserve the existing alpha unchanged.
+        if image.mode == "RGBA":
+            rgba_arr = np.array(image)
+            orig_alpha = rgba_arr[..., 3].astype(np.float32) / 255.0
+            partial = (orig_alpha > 0.05) & (orig_alpha < 0.95)
+            if partial.sum() > 0.02 * orig_alpha.size:
+                print("[Backgrounder] RGBA input with existing transparency — passthrough", flush=True)
+                return MattingResult(
+                    alpha=orig_alpha,
+                    foreground=rgba_arr[..., :3],
+                    rgba=image,
+                    quality_score=1.0,
+                    metadata={
+                        "passthrough": "rgba_input",
+                        "device": self._device,
+                        "timings_ms": {"total": 0.0},
+                    },
+                )
+
         orig_size = image.size  # (W, H)
         image, scale = self._maybe_downscale(image)
 
