@@ -169,19 +169,51 @@ def _alpha_to_points(
     n_fg: int = 8,
     n_bg: int = 4,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Sample stratified fg + bg points from coarse alpha, returned as (x, y)."""
-    fg_yx = np.argwhere(alpha > 0.75)
-    bg_yx = np.argwhere(alpha < 0.05)
+    """
+    Sample foreground + background prompt points from coarse alpha.
+
+    Foreground points are drawn from the distance-transform peak of the FG
+    mask — the "most interior" pixels farthest from any background.  This
+    gives SAM 2.1 robust centroid anchors rather than random surface pixels.
+
+    Background points are sampled near the border of the alpha to give SAM a
+    clear BG signal in the typical case where the subject is centred.
+
+    Returns (points, labels) in (x, y) pixel coordinates.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    fg_mask = alpha > 0.75
+    bg_mask = alpha < 0.05
     rng = np.random.default_rng(42)
 
-    def _sample(pool: np.ndarray, n: int) -> np.ndarray:
-        if len(pool) == 0:
-            return np.zeros((0, 2), dtype=np.float32)
-        idx = rng.choice(len(pool), size=min(n, len(pool)), replace=False)
-        return pool[idx][:, ::-1].astype(np.float32)  # (y,x) → (x,y)
+    # FG: distance-transform sampling — concentrate near the medial axis.
+    fg_pts: np.ndarray
+    if fg_mask.any():
+        dt = distance_transform_edt(fg_mask).astype(np.float32)
+        dt_flat = dt.ravel()
+        # Weight sampling by distance² → strong preference for interior points.
+        w = dt_flat ** 2
+        w_sum = w.sum()
+        if w_sum > 0:
+            probs = w / w_sum
+            flat_idx = rng.choice(len(probs), size=min(n_fg, fg_mask.sum()), replace=False, p=probs)
+        else:
+            flat_idx = rng.choice(fg_mask.sum(), size=min(n_fg, fg_mask.sum()), replace=False)
+            flat_idx = np.argwhere(fg_mask.ravel())[flat_idx].ravel()
+        yx = np.stack(np.unravel_index(flat_idx, alpha.shape), axis=1)
+        fg_pts = yx[:, ::-1].astype(np.float32)   # (y,x) → (x,y)
+    else:
+        fg_pts = np.zeros((0, 2), dtype=np.float32)
 
-    fg_pts = _sample(fg_yx, n_fg)
-    bg_pts = _sample(bg_yx, n_bg)
+    # BG: random sample from confirmed background.
+    bg_pts: np.ndarray
+    bg_yx = np.argwhere(bg_mask)
+    if len(bg_yx) > 0:
+        idx = rng.choice(len(bg_yx), size=min(n_bg, len(bg_yx)), replace=False)
+        bg_pts = bg_yx[idx][:, ::-1].astype(np.float32)
+    else:
+        bg_pts = np.zeros((0, 2), dtype=np.float32)
 
     if len(fg_pts) == 0:
         return np.zeros((0, 2), dtype=np.float32), np.array([], dtype=np.int64)

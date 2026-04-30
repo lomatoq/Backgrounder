@@ -392,14 +392,20 @@ class BackgroundRemovalPipeline:
                     report_sdmatte = score_alpha(
                         alpha_sdmatte, depth_edges=depth_edges, confidence=ben2_confidence
                     )
-                    if report_sdmatte.score >= report.score:
+                    # Always accept when forced (user override takes priority).
+                    # When score-triggered: accept if score doesn't regress by more than 0.02.
+                    accept = (
+                        self.config.force_sdmatte
+                        or report_sdmatte.score >= report.score - 0.02
+                    )
+                    if accept:
                         alpha = alpha_sdmatte
                         report = report_sdmatte
                         meta["quality"] = str(report_sdmatte)
                     meta["sdmatte_used"] = True
                     meta["sdmatte_forced"] = self.config.force_sdmatte
                     meta["sdmatte_score"] = round(report_sdmatte.score, 3)
-                    meta["sdmatte_accepted"] = report_sdmatte.score >= report.score
+                    meta["sdmatte_accepted"] = accept
             else:
                 meta["sdmatte_skipped"] = f"quality {round(report.score,3)} >= trigger {round(sdmatte_trigger,3)}"
 
