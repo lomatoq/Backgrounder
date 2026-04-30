@@ -96,28 +96,32 @@ def multiscale_guided_filter(
     """
     Gradient-weighted multi-scale guided filter fusion.
 
-    Three guided filters run simultaneously at different radii; their outputs
-    are blended per-pixel based on local alpha gradient magnitude:
+    Three guided filters at different radii are merged per-pixel using the
+    IMAGE gradient (not alpha gradient) to select scale:
 
-      fine   (r=2,  eps=1e-5) — dominates at sharp object boundaries.
-                                Preserves sub-pixel detail, avoids over-smoothing edges.
-      medium (r=7,  eps=5e-4) — covers mid-gradient regions (semi-transparent areas,
-                                soft shadows, slight defocus at boundary).
-      coarse (r=18, eps=5e-3) — dominates in smooth foreground/background areas.
-                                Suppresses noisy speckle in glass bodies and sky.
+      fine   (r=2,  eps=1e-5) — dominates at real object boundaries
+      medium (r=6,  eps=5e-4) — semi-transparent / soft-shadow regions
+      coarse (r=12, eps=3e-3) — smooth glass bodies, uniform backgrounds
 
-    Blend weights are quadratic in gradient magnitude g ∈ [0,1]:
-        w_fine   = g²           (→1 at crisp edges, →0 in smooth areas)
-        w_coarse = (1-g)²       (→1 in smooth areas, →0 at crisp edges)
-        w_medium = 2g(1-g)      (peaks at g=0.5, zero at both extremes)
-    Sum is always exactly 1.0 at every pixel (g² + 2g(1-g) + (1-g)² = 1).
+    Scale selection is driven by the GUIDE (image) gradient, not the alpha.
+    The alpha can be noisy everywhere, which would make the alpha gradient
+    high everywhere and force fine-scale everywhere (defeating the purpose).
+    The image has real structure only at true object edges, so the image
+    gradient correctly identifies where fine-scale sharpness is needed.
+
+    Blend weights (quadratic, sum to 1 exactly):
+        w_fine   = g²        → 1 at crisp image edges, 0 in smooth areas
+        w_coarse = (1-g)²    → 1 in smooth areas, 0 at edges
+        w_medium = 2g(1-g)   → peaks at g=0.5
     """
     fine   = _guided_filter(guide, src, r=2,  eps=1e-5)
-    medium = _guided_filter(guide, src, r=7,  eps=5e-4)
-    coarse = _guided_filter(guide, src, r=18, eps=5e-3)
+    medium = _guided_filter(guide, src, r=6,  eps=5e-4)
+    coarse = _guided_filter(guide, src, r=12, eps=3e-3)
 
-    gx = np.abs(sobel(src.astype(np.float64), axis=1))
-    gy = np.abs(sobel(src.astype(np.float64), axis=0))
+    # Gradient from the IMAGE (guide), not from the alpha.
+    I = guide.mean(axis=2).astype(np.float64)
+    gx = np.abs(sobel(I, axis=1))
+    gy = np.abs(sobel(I, axis=0))
     g = np.sqrt(gx ** 2 + gy ** 2)
     g = (g / (g.max() + 1e-8)).astype(np.float32)
 

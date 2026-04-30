@@ -21,16 +21,18 @@ SUBJECT_TYPES = [
 
 # Text prompts fed to CLIP for zero-shot classification.
 _PROMPTS: Dict[str, str] = {
-    "portrait":      "a portrait or fashion photo of a person, model, or human with visible hair",
+    # Broad — catches professional portraits, selfies, casual close-ups, full body.
+    "portrait":      "a photo of a person, man, woman, or human face — selfie, portrait, or casual photo",
     "animal_fur":    "a photo of a furry animal, pet, cat, dog, or wildlife",
-    "product":       "a product photo of an object, appliance, toy, gadget, 3D render, or item",
+    "product":       "a product photo of an object, appliance, toy, gadget, 3D render, or item on a plain background",
     "plant_thin":    "a photo of a plant, flower, tree, grass, leaves, or thin branches",
-    "transparent":   "a photo of transparent glass, crystal, water, or smoke",
+    "transparent":   "a photo of a transparent glass, crystal, water droplet, or smoke",
     "vehicle":       "a photo of a car, motorcycle, truck, bicycle, or other vehicle",
-    "anime":         "an anime drawing, cartoon character, or digital illustration",
-    "complex_multi": "a group photo or scene with multiple people or multiple separate foreground subjects",
-    "text_logo":     "text, typography, a logo, icon, wordmark, or graphic design on a solid plain background",
-    "generic":       "a miscellaneous photo that does not fit other categories",
+    "anime":         "an anime drawing, cartoon illustration, or digital character art",
+    "complex_multi": "a group photo with multiple people, or a scene with many separate foreground objects",
+    "text_logo":     "text, typography, a logo, brand mark, icon, or graphic design on a solid background",
+    # Generic should NOT win when a human or known-object category fits.
+    "generic":       "a photo of an inanimate object, furniture, food, or scene with no people, animals, or vehicles",
 }
 
 # Segmenter weight overrides per subject type.
