@@ -294,7 +294,8 @@ class BackgroundRemovalPipeline:
         _HAIR_TYPES = {"portrait", "animal_fur", "plant_thin"}
         trimap_dilation = self.config.trimap_dilation
         if subject_type in _HAIR_TYPES:
-            trimap_dilation = max(trimap_dilation, 20)
+            # Wide band: ViTMatte needs room around every wispy strand.
+            trimap_dilation = max(trimap_dilation, 28)
         elif subject_type == "text_logo":
             trimap_dilation = min(trimap_dilation, 5)
 
@@ -443,7 +444,7 @@ class BackgroundRemovalPipeline:
             if subject_type == "transparent":
                 foreground = image_np
             else:
-                foreground = estimate_foreground(image_np, alpha)
+                foreground = estimate_foreground(image_np, alpha, subject_type=subject_type)
 
         rgba = compose_rgba(foreground, alpha)
         total_ms = round((time.perf_counter() - t_total) * 1000, 1)
