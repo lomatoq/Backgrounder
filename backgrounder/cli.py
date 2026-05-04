@@ -21,8 +21,8 @@ from backgrounder.config import PipelineConfig, SegmenterID, Device
               help="Compute device.")
 @click.option("--segmenters", default="birefnet_hr,ben2", show_default=True,
               help="Comma-separated segmenter IDs: birefnet_hr,ben2,inspyrenet")
-@click.option("--no-depth", is_flag=True, default=False,
-              help="Disable Depth Anything V2-Small (faster, worse on low-contrast).")
+@click.option("--depth", is_flag=True, default=False,
+              help="Enable Depth Anything V2-Small experimental refinement.")
 @click.option("--fp32", is_flag=True, default=False,
               help="Force float32 (useful on MPS or for debugging).")
 @click.option("--trimap-dilation", default=10, show_default=True, type=int,
@@ -69,7 +69,7 @@ def main(
     output_dir: Optional[str],
     device: str,
     segmenters: str,
-    no_depth: bool,
+    depth: bool,
     fp32: bool,
     trimap_dilation: int,
     premultiplied: bool,
@@ -115,7 +115,7 @@ def main(
     config = PipelineConfig(
         segmenters=seg_ids,
         device=Device(device),
-        use_depth=not no_depth,
+        use_depth=depth,
         fp16=not fp32,
         trimap_dilation=trimap_dilation,
         premultiplied=premultiplied,

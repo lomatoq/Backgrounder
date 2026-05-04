@@ -27,7 +27,12 @@ from backgrounder.stages import (
     tile_process,
     sam2_refine,
     transparency_refine,
+    despill_solid_background,
+    remove_solid_background_spill,
+    analyze_image_route,
+    scrub_transparent_rgb,
     uncertainty_gated_sharpen,
+    visual_alpha_fixes,
 )
 from backgrounder.utils import (
     resolve_device,
@@ -164,7 +169,8 @@ class BackgroundRemovalPipeline:
             rgba_arr = np.array(image)
             orig_alpha = rgba_arr[..., 3].astype(np.float32) / 255.0
             partial = (orig_alpha > 0.05) & (orig_alpha < 0.95)
-            if partial.sum() > 0.02 * orig_alpha.size:
+            transparent = orig_alpha < 0.99
+            if transparent.sum() > 0.001 * orig_alpha.size or partial.sum() > 0:
                 print("[Backgrounder] RGBA input with existing transparency — passthrough", flush=True)
                 return MattingResult(
                     alpha=orig_alpha,
@@ -245,7 +251,16 @@ class BackgroundRemovalPipeline:
             expert = classification.expert
             subject_type = classification.subject_type
             meta["subject_type"] = subject_type
-            meta["expert"] = expert
+            meta["expert"] = _display_expert_name(expert)
+            top_scores = sorted(
+                classification.scores.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:5]
+            meta["neural_advisor_top"] = [
+                {"type": name, "score": round(float(score), 4)}
+                for name, score in top_scores
+            ]
 
             # Map classifier weights to ordered list for ensemble.
             # Use SegmenterID.value (matches dict keys), NOT model.name (varies).
@@ -268,6 +283,22 @@ class BackgroundRemovalPipeline:
             )
         if tta_on:
             meta["tta"] = True
+
+        route = analyze_image_route(
+            image=image,
+            subject_type=subject_type,
+            alpha=alpha,
+            uncertainty=uncertainty,
+        )
+        meta.update(route.metadata())
+        if (
+            expert == "color_key"
+            and subject_type != "text_glow"
+            and not (route.clean_border and route.keyable)
+        ):
+            expert = "depth_only"
+            meta["expert"] = _display_expert_name(expert)
+            meta["expert_route_override"] = "color_key_disabled_without_clean_plate"
 
         # Note: a previous auto-transparency heuristic was removed. It misfired
         # on white text, light-colored objects with anti-aliased edges, etc.
@@ -296,7 +327,7 @@ class BackgroundRemovalPipeline:
         if subject_type in _HAIR_TYPES:
             # Wide band: ViTMatte needs room around every wispy strand.
             trimap_dilation = max(trimap_dilation, 28)
-        elif subject_type == "text_logo":
+        elif subject_type in {"anime", "flat_cartoon", "text_logo", "sticker_logo", "text_glow"}:
             trimap_dilation = min(trimap_dilation, 5)
 
         with timer("stage_C_trimap", meta["timings_ms"]):
@@ -308,11 +339,14 @@ class BackgroundRemovalPipeline:
             )
 
         # Stage D — Expert refinement (Phase 2: routed; Phase 1: depth-only)
-        print(f"[Stage D] Refining alpha (expert={expert})...", flush=True)
+        print(f"[Stage D] Refining alpha (expert={_display_expert_name(expert)})...", flush=True)
         with timer("stage_D_refine", meta["timings_ms"]):
             use_closed_form = (
                 self.config.use_closed_form_refine
-                and subject_type != "transparent"
+                and subject_type not in {
+                    "transparent", "transparent_object", "product_glass",
+                    "anime", "flat_cartoon", "text_logo", "sticker_logo", "text_glow",
+                }
             )
             alpha = expert_refine(
                 image=image,
@@ -327,7 +361,11 @@ class BackgroundRemovalPipeline:
 
         # text_logo already has binary-snapped crisp edges from color_key;
         # uncertainty sharpening would distort those clean edges.
-        if self.config.use_uncertainty_sharpen and subject_type not in ("transparent", "text_logo"):
+        if self.config.use_uncertainty_sharpen and subject_type not in (
+            "transparent", "transparent_object", "product_glass",
+            "text_logo", "sticker_logo", "text_glow",
+            "anime", "flat_cartoon",
+        ):
             with timer("stage_D2_uncertainty_sharpen", meta["timings_ms"]):
                 alpha = uncertainty_gated_sharpen(
                     alpha,
@@ -335,6 +373,18 @@ class BackgroundRemovalPipeline:
                     threshold=self.config.uncertainty_sharpen_threshold,
                     strength=self.config.uncertainty_sharpen_strength,
                 )
+
+        if subject_type == "anime" and self._sdmatte is None and route.use_cartoon_snap:
+            with timer("stage_D4_cartoon_alpha_snap", meta["timings_ms"]):
+                alpha = _snap_cartoon_alpha(alpha)
+                meta["cartoon_alpha_snap"] = True
+        elif subject_type == "anime":
+            meta["cartoon_alpha_snap"] = False
+
+        if route.use_graphic_alpha_normalize:
+            with timer("stage_D5_graphic_alpha_normalize", meta["timings_ms"]):
+                alpha = _normalize_graphic_alpha(alpha, subject_type=subject_type)
+                meta["graphic_alpha_normalize"] = True
 
         # Stage F — Quality judge + wider-trimap retry
         with timer("stage_F_judge", meta["timings_ms"]):
@@ -358,7 +408,9 @@ class BackgroundRemovalPipeline:
                 use_closed_form=use_closed_form,
                 closed_form_max_pixels=self.config.closed_form_max_pixels,
             )
-            if self.config.use_uncertainty_sharpen and subject_type != "transparent":
+            if self.config.use_uncertainty_sharpen and subject_type not in {
+                "transparent", "transparent_object", "product_glass",
+            }:
                 alpha2 = uncertainty_gated_sharpen(
                     alpha2,
                     uncertainty,
@@ -372,17 +424,17 @@ class BackgroundRemovalPipeline:
                 meta["quality_retry"] = str(report2)
 
         # Stage G0 — SDMatte diffusion refinement (optional, heavy CUDA path)
-        # Hard subjects get a raised trigger so SDMatte runs unless quality is already excellent.
-        # force_sdmatte bypasses the quality gate entirely (user opt-in from UI).
-        _HARD_SUBJECTS = {"portrait", "animal_fur", "complex_multi", "plant_thin"}
+        # Only a narrow set auto-routes through SDMatte; force_sdmatte remains
+        # an explicit developer override.
         sdmatte_trigger = self.config.sdmatte_quality_trigger
-        if subject_type in _HARD_SUBJECTS:
+        if route.allow_sdmatte_auto:
             sdmatte_trigger = min(sdmatte_trigger + 0.10, 0.85)
 
         if self._sdmatte is not None:
             meta["sdmatte_score_before"] = round(report.score, 3)
             meta["sdmatte_trigger"] = round(sdmatte_trigger, 3)
-            run_sdmatte = self.config.force_sdmatte or report.score < sdmatte_trigger
+            auto_allowed = route.allow_sdmatte_auto
+            run_sdmatte = self.config.force_sdmatte or (auto_allowed and report.score < sdmatte_trigger)
             if run_sdmatte:
                 reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
                 print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
@@ -406,6 +458,8 @@ class BackgroundRemovalPipeline:
                     meta["sdmatte_forced"] = self.config.force_sdmatte
                     meta["sdmatte_score"] = round(report_sdmatte.score, 3)
                     meta["sdmatte_accepted"] = accept
+            elif not auto_allowed:
+                meta["sdmatte_skipped"] = f"subject {subject_type} uses non-diffusion path"
             else:
                 meta["sdmatte_skipped"] = f"quality {round(report.score,3)} >= trigger {round(sdmatte_trigger,3)}"
 
@@ -435,7 +489,7 @@ class BackgroundRemovalPipeline:
                         meta["quality_sam2"] = str(report_sam2)
 
         # Stage H — Transparency post-processing (Phase 3)
-        if subject_type == "transparent":
+        if subject_type in {"transparent", "transparent_object", "product_glass"}:
             with timer("stage_H_transparency", meta["timings_ms"]):
                 alpha = transparency_refine(
                     alpha=alpha,
@@ -444,15 +498,55 @@ class BackgroundRemovalPipeline:
                     depth_edges=depth_edges,
                 )
 
+        if self.config.use_solid_background_cleanup and route.use_solid_background_cleanup:
+            with timer("stage_H2_solid_bg_spill_cleanup", meta["timings_ms"]):
+                alpha, cleanup_meta = remove_solid_background_spill(
+                    image=image,
+                    alpha=alpha,
+                    subject_type=subject_type,
+                )
+                meta.update(cleanup_meta)
+        elif self.config.use_solid_background_cleanup:
+            meta["solid_bg_spill_cleanup"] = "skipped_route"
+
+        with timer("stage_H3_visual_qa", meta["timings_ms"]):
+            alpha, visual_meta = visual_alpha_fixes(
+                image=image,
+                alpha=alpha,
+                subject_type=subject_type,
+                route_meta=meta,
+            )
+            meta.update(visual_meta)
+
         # Stage E — Foreground decontamination
         with timer("stage_E_decontam", meta["timings_ms"]):
             image_np = np.array(image.convert("RGB"))
-            if subject_type == "transparent":
+            if subject_type in {"transparent", "transparent_object", "product_glass"}:
                 foreground = image_np
+            elif (
+                subject_type in {"portrait", "animal_fur", "plant_thin"}
+                and meta.get("route_background") == "busy"
+            ):
+                foreground = image_np
+                meta["foreground_decontam"] = "skipped_natural_busy_scene"
+            elif meta.get("solid_bg_spill_cleanup") == "applied" and meta.get("solid_bg_bg_rgb"):
+                foreground = despill_solid_background(image_np, alpha, meta["solid_bg_bg_rgb"])
+            elif subject_type == "anime":
+                foreground = image_np
+            elif meta.get("solid_bg_cleanup") == "applied" and meta.get("bg_rgb"):
+                foreground = despill_solid_background(image_np, alpha, meta["bg_rgb"])
             else:
                 foreground = estimate_foreground(image_np, alpha, subject_type=subject_type)
 
-        rgba = compose_rgba(foreground, alpha)
+            if (
+                subject_type in {"anime", "flat_cartoon", "sticker_logo", "solid_screen_keying"}
+                and meta.get("solid_bg_spill_cleanup") != "applied"
+                and meta.get("route_bg_rgb")
+            ):
+                foreground = despill_solid_background(image_np, alpha, meta["route_bg_rgb"])
+                meta["busy_graphic_despill"] = True
+
+        rgba = scrub_transparent_rgb(compose_rgba(foreground, alpha))
         total_ms = round((time.perf_counter() - t_total) * 1000, 1)
         meta["timings_ms"]["total"] = total_ms
         print(f"[Backgrounder] Done in {total_ms/1000:.1f}s  quality={report.score:.3f}  subject={subject_type}", flush=True)
@@ -501,7 +595,7 @@ class BackgroundRemovalPipeline:
 
         image_np = np.array(image.convert("RGB"))
         foreground = estimate_foreground(image_np, alpha)
-        rgba = compose_rgba(foreground, alpha)
+        rgba = scrub_transparent_rgb(compose_rgba(foreground, alpha))
         report = score_alpha(alpha, depth_edges=depth_edges)
 
         return MattingResult(
@@ -525,3 +619,41 @@ class BackgroundRemovalPipeline:
             self._segmenter_ids.append(sid)
 
 
+def _snap_cartoon_alpha(alpha: np.ndarray) -> np.ndarray:
+    """Hard-cut illustration mattes to remove semi-transparent backdrop rims."""
+    snapped = alpha.copy()
+    snapped = np.where(snapped < 0.62, 0.0, snapped)
+    snapped = np.where(snapped > 0.82, 1.0, snapped)
+    return np.clip(snapped, 0.0, 1.0).astype(np.float32)
+
+
+def _normalize_graphic_alpha(alpha: np.ndarray, subject_type: str) -> np.ndarray:
+    """
+    Make graphic/sticker/cartoon cutouts opaque without the old outline-eating snap.
+
+    Dedicated segmentation models often return confident-looking cartoon bodies
+    at alpha 0.45-0.85. For graphics that is visually wrong: stickers and game
+    assets should be opaque inside, with only a narrow antialias band at edges.
+    This contrast curve lifts the body while leaving tiny edge transparency.
+    """
+    if subject_type == "text_glow":
+        return alpha.astype(np.float32)
+
+    low = 0.12
+    high = 0.72
+    if subject_type in {"text_logo", "sticker_logo", "solid_screen_keying"}:
+        low = 0.08
+        high = 0.62
+    elif subject_type in {"anime", "flat_cartoon"}:
+        low = 0.10
+        high = 0.66
+
+    t = np.clip((alpha - low) / (high - low + 1e-6), 0.0, 1.0)
+    lifted = (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+    lifted = np.where(lifted > 0.94, 1.0, lifted)
+    lifted = np.where(lifted < 0.025, 0.0, lifted)
+    return np.clip(np.maximum(alpha * 0.25, lifted), 0.0, 1.0).astype(np.float32)
+
+
+def _display_expert_name(expert: str) -> str:
+    return "crisp_edges" if expert == "depth_only" else expert

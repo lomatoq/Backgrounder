@@ -25,8 +25,9 @@ class PipelineConfig:
         default_factory=lambda: [SegmenterID.BIREFNET_HR, SegmenterID.BEN2]
     )
 
-    # Depth Anything V2-Small (Apache-2.0) for low-contrast refinement.
-    use_depth: bool = True
+    # Depth Anything V2-Small (Apache-2.0), opt-in only.
+    # In practice it can over-expand trimaps and make normal cutouts worse.
+    use_depth: bool = False
     depth_model_id: str = "depth-anything/Depth-Anything-V2-Small-hf"
 
     device: Device = Device.AUTO
@@ -42,11 +43,12 @@ class PipelineConfig:
     max_refine_attempts: int = 2
 
     # Phase 4A: classical matting refinement, no extra model weights.
-    use_closed_form_refine: bool = True
+    use_closed_form_refine: bool = False
     closed_form_max_pixels: int = 65_536
     use_uncertainty_sharpen: bool = True
     uncertainty_sharpen_threshold: float = 0.15
     uncertainty_sharpen_strength: float = 0.60
+    use_solid_background_cleanup: bool = True
 
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
@@ -59,7 +61,7 @@ class PipelineConfig:
     # Phase 2: ViTMatte trimap-based refiner for hair/fur.
     # Weights trained on Adobe Composition-1k — NON-COMMERCIAL use only.
     # Set vitmatte_allow_nc=True to confirm you accept that restriction.
-    use_vitmatte: bool = True
+    use_vitmatte: bool = False
     vitmatte_allow_nc: bool = False   # user must opt-in to NC weights
 
     # Phase 3: SDMatte diffusion refiner (MIT, ICCV 2025).
@@ -72,7 +74,7 @@ class PipelineConfig:
     sdmatte_cache_dir: str = "~/.cache/backgrounder/sdmatte"
     sdmatte_variant: str = "sdmatte"  # "sdmatte" or "sdmatte_plus"
     sdmatte_prompt_mode: str = "trimap"  # bbox, mask, trimap, point
-    sdmatte_input_size: int = 768
+    sdmatte_input_size: int = 1024
     sdmatte_quality_trigger: float = 0.72
 
     # Test-Time Augmentation: run ensemble on original + horizontal flip, average.

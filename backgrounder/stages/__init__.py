@@ -6,6 +6,12 @@ from .judge import score_alpha, QualityReport
 from .tiling import tile_process
 from .localize import sam2_refine
 from .transparency import transparency_refine
+from .solid_background import (
+    despill_solid_background,
+    remove_solid_background_spill,
+)
+from .router import CGFeatures, ImageRoute, analyze_cg_features, analyze_image_route
+from .visual_qa import scrub_transparent_rgb, visual_alpha_fixes, visual_quality_report
 
 __all__ = [
     "ensemble_predict",
@@ -20,4 +26,13 @@ __all__ = [
     "tile_process",
     "sam2_refine",
     "transparency_refine",
+    "despill_solid_background",
+    "remove_solid_background_spill",
+    "ImageRoute",
+    "CGFeatures",
+    "analyze_cg_features",
+    "analyze_image_route",
+    "scrub_transparent_rgb",
+    "visual_alpha_fixes",
+    "visual_quality_report",
 ]

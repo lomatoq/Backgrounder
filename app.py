@@ -7,6 +7,10 @@ Quick Gradio demo for the Backgrounder pipeline.
 from __future__ import annotations
 import json
 import os
+import subprocess
+import sys
+import threading
+import time
 
 import numpy as np
 from PIL import Image
@@ -14,6 +18,119 @@ from PIL import Image
 # ── lazy pipeline singleton ────────────────────────────────────────────────
 _pipeline = None
 _pipeline_cfg: dict = {}
+
+
+PRESETS = {
+    "Smart Auto": {
+        "segmenters": "birefnet_hr,ben2",
+        "use_depth": False,
+        "use_classifier": True,
+        "use_vitmatte": False,
+        "use_closed_form": False,
+        "use_uncertainty_sharpen": True,
+        "use_solid_background_cleanup": True,
+        "use_tta": False,
+        "use_sdmatte": False,
+        "force_sdmatte": False,
+        "use_sam2": False,
+        "use_owlv2": False,
+    },
+    "Fast": {
+        "segmenters": "birefnet_hr",
+        "use_depth": False,
+        "use_classifier": True,
+        "use_vitmatte": False,
+        "use_closed_form": False,
+        "use_uncertainty_sharpen": True,
+        "use_solid_background_cleanup": True,
+        "use_tta": False,
+        "use_sdmatte": False,
+        "force_sdmatte": False,
+        "use_sam2": False,
+        "use_owlv2": False,
+    },
+    "Max Quality": {
+        "segmenters": "birefnet_hr,ben2",
+        "use_depth": False,
+        "use_classifier": True,
+        "use_vitmatte": True,
+        "use_closed_form": True,
+        "use_uncertainty_sharpen": True,
+        "use_solid_background_cleanup": True,
+        "use_tta": True,
+        "use_sdmatte": True,
+        "force_sdmatte": False,
+        "use_sam2": True,
+        "use_owlv2": True,
+    },
+}
+
+
+def _preset_values(name: str) -> list:
+    preset = PRESETS.get(name, PRESETS["Smart Auto"])
+    return [
+        preset["segmenters"],
+        preset["use_depth"],
+        preset["use_classifier"],
+        preset["use_vitmatte"],
+        preset["use_closed_form"],
+        preset["use_uncertainty_sharpen"],
+        preset["use_solid_background_cleanup"],
+        preset["use_tta"],
+        preset["use_sdmatte"],
+        preset["force_sdmatte"],
+        preset["use_sam2"],
+        preset["use_owlv2"],
+    ]
+
+
+def _restart_soon(delay_s: float = 1.5) -> None:
+    def _restart() -> None:
+        time.sleep(delay_s)
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    threading.Thread(target=_restart, daemon=True).start()
+
+
+def update_from_git() -> str:
+    """Pull the latest code without restarting the current process."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    try:
+        proc = subprocess.run(
+            ["git", "pull", "--ff-only"],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return "Update timed out after 120s. The app was not restarted."
+    except Exception as exc:
+        return f"Update failed before git could run: {exc}"
+
+    output = "\n".join(part.strip() for part in (proc.stdout, proc.stderr) if part.strip())
+    if proc.returncode != 0:
+        return (
+            "Update failed. The app was not restarted.\n\n"
+            f"{output or 'git pull returned a non-zero exit code.'}"
+        )
+
+    return "Update complete. Click Restart app to load the new code.\n\n" + (
+        output or "Already up to date."
+    )
+
+
+def restart_app() -> str:
+    """Restart this Gradio app process."""
+    if os.environ.get("BACKGROUNDER_NO_AUTO_RESTART") == "1":
+        return "Restart is disabled by BACKGROUNDER_NO_AUTO_RESTART=1."
+
+    _restart_soon()
+    return "Restarting the app now; the browser tab will reconnect shortly."
 
 
 def _sdmatte_ui_defaults() -> dict:
@@ -25,11 +142,12 @@ def _sdmatte_ui_defaults() -> dict:
     except Exception:
         cuda_available = False
     if cuda_available:
-        status = "SDMatte ready (CUDA detected). Weights auto-download on first use (~5 GB)."
+        status = "SDMatte available (CUDA detected), but off by default. Enable it only for difficult mattes."
     else:
         status = "SDMatte requires CUDA — disabled on this device."
     return {
-        "enabled": False,           # off by default — user opts in
+        "enabled": False,
+        "force": False,
         "cache_dir": cache_dir,
         "status": status,
     }
@@ -43,6 +161,7 @@ def _get_pipeline(
     use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
+    use_solid_background_cleanup: bool,
     use_tta: bool,
     use_sdmatte: bool,
     sdmatte_cache_dir: str,
@@ -55,7 +174,8 @@ def _get_pipeline(
 
     cfg_key = (
         device, segmenters, use_depth, use_classifier,
-        use_vitmatte, use_closed_form, use_uncertainty_sharpen, use_tta,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+        use_solid_background_cleanup, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -74,6 +194,7 @@ def _get_pipeline(
         vitmatte_allow_nc=use_vitmatte,
         use_closed_form_refine=use_closed_form,
         use_uncertainty_sharpen=use_uncertainty_sharpen,
+        use_solid_background_cleanup=use_solid_background_cleanup,
         use_tta=use_tta,
         use_sdmatte=use_sdmatte,
         sdmatte_cache_dir=sdmatte_cache_dir or "~/.cache/backgrounder/sdmatte",
@@ -92,6 +213,7 @@ def _get_pipeline(
 
 def remove_background(
     image: Image.Image,
+    mode: str,
     device: str,
     segmenters: str,
     use_depth: bool,
@@ -99,6 +221,7 @@ def remove_background(
     use_vitmatte: bool,
     use_closed_form: bool,
     use_uncertainty_sharpen: bool,
+    use_solid_background_cleanup: bool,
     use_tta: bool,
     use_sdmatte: bool,
     force_sdmatte: bool,
@@ -116,9 +239,31 @@ def remove_background(
     if image is None:
         return None, None, "Upload an image first."
 
+    if image.mode == "RGBA":
+        rgba_arr = np.array(image)
+        orig_alpha = rgba_arr[..., 3].astype(np.float32) / 255.0
+        partial = (orig_alpha > 0.05) & (orig_alpha < 0.95)
+        transparent = orig_alpha < 0.99
+        if transparent.sum() > 0.001 * orig_alpha.size or partial.sum() > 0:
+            preview = _compose_checker(image) if checkerboard else image
+            info = {
+                "mode": mode,
+                "quality_score": 1.0,
+                "subject_type": "rgba_input",
+                "expert_used": "passthrough",
+                "passthrough": "existing_alpha",
+                "tta": False,
+                "sdmatte_used": False,
+                "sam2_used": False,
+                "solid_bg_spill_cleanup": "skipped_rgba_input",
+                "timings_ms": {"total": 0.0},
+            }
+            return image, preview, json.dumps(info, indent=2)
+
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
-        use_vitmatte, use_closed_form, use_uncertainty_sharpen, use_tta,
+        use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+        use_solid_background_cleanup, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
         use_sam2, use_owlv2,
     )
@@ -133,14 +278,39 @@ def remove_background(
     preview = _compose_checker(result.rgba) if checkerboard else result.rgba
 
     info = {
+        "mode": mode,
         "quality_score": round(result.quality_score, 3),
         "subject_type": result.metadata.get("subject_type", "n/a"),
         "expert_used": result.metadata.get("expert", "n/a"),
+        "neural_advisor_top": result.metadata.get("neural_advisor_top", []),
+        "route_id": result.metadata.get("route_id", None),
+        "route_image_family": result.metadata.get("route_image_family", None),
+        "route_material_hint": result.metadata.get("route_material_hint", None),
+        "route_background": result.metadata.get("route_background", None),
+        "route_keyable": result.metadata.get("route_keyable", None),
+        "route_notes": result.metadata.get("route_notes", []),
+        "cg_clean_border": result.metadata.get("cg_clean_border", result.metadata.get("route_clean_border", None)),
+        "cg_bg_rgb": result.metadata.get("cg_bg_rgb", result.metadata.get("route_bg_rgb", None)),
+        "cg_border_p95": result.metadata.get("cg_border_p95", result.metadata.get("route_border_p95", None)),
+        "cg_border_p99": result.metadata.get("cg_border_p99", result.metadata.get("route_border_p99", None)),
+        "cg_uncertain_band_ratio": result.metadata.get("cg_uncertain_band_ratio", result.metadata.get("route_uncertain_band_ratio", None)),
+        "cg_alpha_hole_ratio": result.metadata.get("cg_alpha_hole_ratio", result.metadata.get("route_alpha_hole_ratio", None)),
+        "cg_alpha_halo_ratio": result.metadata.get("cg_alpha_halo_ratio", result.metadata.get("route_alpha_halo_ratio", None)),
         "tta": result.metadata.get("tta", False),
         "sdmatte_used": result.metadata.get("sdmatte_used", False),
         "sdmatte_forced": result.metadata.get("sdmatte_forced", False),
         "sdmatte_skipped": result.metadata.get("sdmatte_skipped", None),
         "sam2_used": result.metadata.get("sam2_used", False),
+        "solid_bg_cleanup": result.metadata.get("solid_bg_cleanup", None),
+        "solid_bg_cleanup_bg_rgb": result.metadata.get("bg_rgb", None),
+        "solid_bg_spill_cleanup": result.metadata.get("solid_bg_spill_cleanup", None),
+        "solid_bg_spill_bg_rgb": result.metadata.get("solid_bg_bg_rgb", None),
+        "checkerboard_cleanup": result.metadata.get("checkerboard_cleanup", None),
+        "graphic_border_residue_cleanup": result.metadata.get("graphic_border_residue_cleanup", None),
+        "portrait_lower_surface_cleanup": result.metadata.get("portrait_lower_surface_cleanup", None),
+        "visual_bg_colored_residue_ratio": result.metadata.get("visual_bg_colored_residue_ratio", None),
+        "busy_graphic_despill": result.metadata.get("busy_graphic_despill", False),
+        "foreground_decontam": result.metadata.get("foreground_decontam", None),
         "timings_ms": result.metadata.get("timings_ms", {}),
         "quality_detail": result.metadata.get("quality", ""),
     }
@@ -166,24 +336,40 @@ def build_ui():
     sdmatte_defaults = _sdmatte_ui_defaults()
 
     subject_choices = [
-        "auto", "portrait", "animal_fur", "product",
-        "plant_thin", "transparent", "vehicle", "anime",
-        "complex_multi", "text_logo", "generic",
+        "auto",
+        "portrait", "animal_fur", "plant_thin",
+        "product", "product_opaque", "product_glass",
+        "transparent", "transparent_object",
+        "vehicle",
+        "anime", "flat_cartoon",
+        "complex_multi",
+        "text_logo", "sticker_logo", "text_glow",
+        "document_screenshot", "solid_screen_keying", "busy_scene",
+        "generic",
     ]
 
     with gr.Blocks(title="Backgrounder", theme=gr.themes.Soft()) as demo:
         gr.Markdown(
-            "## Backgrounder — SOTA background removal\n"
-            "BiRefNet HR · BEN2 · Depth Anything V2 · CLIP classifier · "
-            "SAM 2.1 · OWLv2"
+            "## Backgrounder - background removal\n"
+            "Smart Auto runs the fast BiRefNet HR + BEN2 cutout path. "
+            "Depth is experimental and stays off unless you enable it in developer settings."
         )
 
         with gr.Row():
             # ── left column: input + settings ──
             with gr.Column(scale=1):
                 inp = gr.Image(type="pil", label="Input image")
+                mode = gr.Radio(
+                    ["Smart Auto", "Fast", "Max Quality"],
+                    value="Smart Auto",
+                    label="Mode",
+                )
+                subject_override = gr.Dropdown(
+                    subject_choices, value="auto", label="Subject",
+                )
+                checkerboard = gr.Checkbox(value=True, label="Preview on checkerboard")
 
-                with gr.Accordion("Settings", open=False):
+                with gr.Accordion("Developer settings", open=False):
                     device = gr.Radio(
                         ["auto", "cuda", "mps", "cpu"],
                         value="auto", label="Device",
@@ -193,25 +379,26 @@ def build_ui():
                         label="Segmenters (comma-separated)",
                         info="birefnet_hr · ben2 · inspyrenet",
                     )
-                    use_depth = gr.Checkbox(value=True, label="Depth Anything V2-Small")
+                    use_depth = gr.Checkbox(value=False, label="Depth Anything V2-Small (experimental)")
                     use_classifier = gr.Checkbox(value=True, label="CLIP subject classifier")
                     use_vitmatte = gr.Checkbox(
-                        value=True,
+                        value=False,
                         label="ViTMatte refiner — best for hair/fur (NC weights: non-commercial only)",
                         info="hustvl/vitmatte-small-composition-1k — Adobe Composition-1K licence",
                     )
-                    use_closed_form = gr.Checkbox(value=True, label="Closed-form matting (products/vehicles)")
+                    use_closed_form = gr.Checkbox(value=False, label="Closed-form matting (experimental)")
                     use_uncertainty_sharpen = gr.Checkbox(value=True, label="Uncertainty-gated sharpening")
+                    use_solid_background_cleanup = gr.Checkbox(
+                        value=True,
+                        label="Remove solid background color spill",
+                        info="Final export cleanup for leftover blue/green rims on flat backgrounds.",
+                    )
                     use_tta = gr.Checkbox(
                         value=False,
                         label="Test-time augmentation — TTA  (2× slower Stage B, better for dark/low-contrast)",
                         info="Runs each segmenter on original + horizontal flip, averages the results. "
                              "Helps Spider-Man-on-dark-background type images.",
                     )
-                    subject_override = gr.Dropdown(
-                        subject_choices, value="auto", label="Subject type override",
-                    )
-
                     gr.Markdown("**Phase 3** — activate for harder images")
                     gr.Markdown(sdmatte_defaults["status"])
                     use_sdmatte = gr.Checkbox(
@@ -220,7 +407,7 @@ def build_ui():
                         info="Triggers when quality < 0.72. Requires CUDA + diffusers.",
                     )
                     force_sdmatte = gr.Checkbox(
-                        value=False,
+                        value=sdmatte_defaults["force"],
                         label="Force SDMatte (ignore quality gate)",
                         info="Run SDMatte on every image regardless of quality score. Only active when SDMatte is enabled.",
                     )
@@ -247,19 +434,22 @@ def build_ui():
                         info="Only active when SAM 2.1 is enabled · ~300 MB on first use",
                     )
 
-                    checkerboard = gr.Checkbox(value=True, label="Preview on checkerboard")
-
                 btn = gr.Button("Remove background", variant="primary")
+                with gr.Row():
+                    update_btn = gr.Button("Update from GitHub")
+                    restart_btn = gr.Button("Restart app")
+                update_status = gr.Textbox(label="Update status", interactive=False)
 
             # ── right column: outputs ──
             with gr.Column(scale=1):
-                out_rgba = gr.Image(type="pil", label="Result (RGBA)", image_mode="RGBA")
                 out_preview = gr.Image(type="pil", label="Preview on checker")
+                out_rgba = gr.Image(type="pil", label="Download RGBA (transparent)", image_mode="RGBA")
                 out_info = gr.Code(label="Diagnostics (JSON)", language="json")
 
         _inputs = [
-            inp, device, segmenters, use_depth, use_classifier,
+            inp, mode, device, segmenters, use_depth, use_classifier,
             use_vitmatte, use_closed_form, use_uncertainty_sharpen,
+            use_solid_background_cleanup,
             use_tta,
             use_sdmatte, force_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
             use_sam2, use_owlv2, subject_override, checkerboard,
@@ -269,6 +459,27 @@ def build_ui():
                   outputs=[out_rgba, out_preview, out_info])
         inp.upload(fn=remove_background, inputs=_inputs,
                    outputs=[out_rgba, out_preview, out_info])
+        mode.change(
+            fn=lambda name: _preset_values(name),
+            inputs=[mode],
+            outputs=[
+                segmenters, use_depth, use_classifier, use_vitmatte,
+                use_closed_form, use_uncertainty_sharpen,
+                use_solid_background_cleanup, use_tta,
+                use_sdmatte, force_sdmatte, use_sam2, use_owlv2,
+            ],
+        )
+        update_btn.click(
+            fn=update_from_git,
+            inputs=[],
+            outputs=[update_status],
+        )
+        restart_btn.click(
+            fn=restart_app,
+            inputs=[],
+            outputs=[update_status],
+            js="() => { setTimeout(() => window.location.reload(), 5000); return []; }",
+        )
 
     return demo
 

@@ -1,86 +1,126 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, List, Optional
 
-import numpy as np
+from dataclasses import dataclass
+from typing import Dict
+
 from PIL import Image
+
 
 # Subject types that drive expert routing and segmenter weights.
 SUBJECT_TYPES = [
-    "portrait",       # person with hair — ViTMatte refiner
-    "animal_fur",     # furry animal / pet — ViTMatte refiner
-    "product",        # product on clean background — BEN2-heavy
-    "plant_thin",     # plant, grass, thin branches — ViTMatte refiner
-    "transparent",    # glass, smoke, water — depth-heavy
-    "vehicle",        # car, bike — BiRefNet-heavy
-    "anime",          # cartoon / illustration
-    "complex_multi",  # multiple objects / occlusion
-    "text_logo",      # text, logo, icon on solid/plain background — color-key extraction
-    "generic",        # fallback
+    "portrait",
+    "animal_fur",
+    "product",
+    "product_opaque",
+    "product_glass",
+    "plant_thin",
+    "transparent",
+    "transparent_object",
+    "vehicle",
+    "anime",
+    "flat_cartoon",
+    "complex_multi",
+    "text_logo",
+    "sticker_logo",
+    "text_glow",
+    "document_screenshot",
+    "solid_screen_keying",
+    "busy_scene",
+    "generic",
 ]
 
-# Text prompts fed to CLIP for zero-shot classification.
+
 _PROMPTS: Dict[str, str] = {
-    # Broad — catches professional portraits, selfies, casual close-ups, full body.
-    "portrait":      "a photo of a person, man, woman, or human face — selfie, portrait, or casual photo",
-    "animal_fur":    "a photo of a furry animal, pet, cat, dog, or wildlife",
-    "product":       "a product photo of an object, appliance, toy, gadget, 3D render, or item on a plain background",
-    "plant_thin":    "a photo of a plant, flower, tree, grass, leaves, or thin branches",
-    "transparent":   "a photo of a transparent glass, crystal, water droplet, or smoke",
-    "vehicle":       "a photo of a car, motorcycle, truck, bicycle, or other vehicle",
-    "anime":         "an anime drawing, cartoon illustration, or digital character art",
-    "complex_multi": "a group photo with multiple people, or a scene with many separate foreground objects",
-    "text_logo":     "text, typography, a logo, brand mark, icon, or graphic design on a solid background",
-    # Generic should NOT win when a human or known-object category fits.
-    "generic":       "a photo of an inanimate object, furniture, food, or scene with no people, animals, or vehicles",
+    "portrait": "a photo of a person, human face, selfie, portrait, or full body person",
+    "animal_fur": "a photo of a furry animal, pet, cat, dog, or wildlife",
+    "product": "a product photo of an object, appliance, toy, gadget, item, or 3D render",
+    "product_opaque": "an opaque product photo, toy, gadget, package, shoe, tool, or hard-edged object",
+    "product_glass": "a reflective or transparent product, glass bottle, jewelry, crystal, acrylic, or shiny translucent object",
+    "plant_thin": "a photo of a plant, flower, tree, grass, leaves, or thin branches",
+    "transparent": "a photo of transparent glass, crystal, water, smoke, or translucent material",
+    "transparent_object": "a transparent object with see-through material, glass, plastic, smoke, liquid, or reflections",
+    "vehicle": "a photo of a car, motorcycle, truck, bicycle, or other vehicle",
+    "anime": "an anime drawing, cartoon illustration, or digital character art",
+    "flat_cartoon": "a flat-color cartoon, sticker, mascot, game sprite, or outlined illustration",
+    "complex_multi": "a group photo, multiple people, many separate foreground objects, or occluded scene",
+    "text_logo": "text, typography, logo, brand mark, icon, or graphic design on a plain background",
+    "sticker_logo": "a sticker, logo, decal, icon, badge, mascot mark, or graphic cutout with outline",
+    "text_glow": "glowing text, neon typography, gold text, transparent text effects, shadows, or luminous logo text",
+    "document_screenshot": "a screenshot, document, UI panel, chart, table, code block, meme, or flat screen capture",
+    "solid_screen_keying": "an object photographed or drawn on a solid blue, green, red, or chroma key background",
+    "busy_scene": "a natural photo with a busy background, cluttered scene, room, street, landscape, or textured backdrop",
+    "generic": "a photo of an inanimate object, furniture, food, or scene with no people, animals, or vehicles",
 }
 
-# Segmenter weight overrides per subject type.
-# Keys match SegmenterID values; absent keys → equal weight (normalised later).
+
+_PRODUCT_WEIGHTS = {"birefnet_hr": 0.30, "ben2": 0.55, "inspyrenet": 0.15}
+_NATURAL_WEIGHTS = {"birefnet_hr": 0.55, "ben2": 0.35, "inspyrenet": 0.10}
+_CARTOON_WEIGHTS = {"birefnet_hr": 0.40, "ben2": 0.30, "inspyrenet": 0.30}
+_TEXT_WEIGHTS = {"birefnet_hr": 0.25, "ben2": 0.65, "inspyrenet": 0.10}
+_GENERIC_WEIGHTS = {"birefnet_hr": 0.40, "ben2": 0.40, "inspyrenet": 0.20}
+
+
 SEGMENTER_WEIGHTS: Dict[str, Dict[str, float]] = {
-    "portrait":      {"birefnet_hr": 0.55, "ben2": 0.45, "inspyrenet": 0.00},
-    "animal_fur":    {"birefnet_hr": 0.55, "ben2": 0.35, "inspyrenet": 0.10},
-    "product":       {"birefnet_hr": 0.30, "ben2": 0.55, "inspyrenet": 0.15},
-    "plant_thin":    {"birefnet_hr": 0.50, "ben2": 0.30, "inspyrenet": 0.20},
-    "transparent":   {"birefnet_hr": 0.60, "ben2": 0.40, "inspyrenet": 0.00},
-    "vehicle":       {"birefnet_hr": 0.50, "ben2": 0.35, "inspyrenet": 0.15},
-    "anime":         {"birefnet_hr": 0.40, "ben2": 0.30, "inspyrenet": 0.30},
+    "portrait": {"birefnet_hr": 0.55, "ben2": 0.45, "inspyrenet": 0.00},
+    "animal_fur": _NATURAL_WEIGHTS,
+    "product": _PRODUCT_WEIGHTS,
+    "product_opaque": _PRODUCT_WEIGHTS,
+    "product_glass": {"birefnet_hr": 0.50, "ben2": 0.40, "inspyrenet": 0.10},
+    "plant_thin": {"birefnet_hr": 0.50, "ben2": 0.30, "inspyrenet": 0.20},
+    "transparent": {"birefnet_hr": 0.60, "ben2": 0.40, "inspyrenet": 0.00},
+    "transparent_object": {"birefnet_hr": 0.60, "ben2": 0.40, "inspyrenet": 0.00},
+    "vehicle": {"birefnet_hr": 0.50, "ben2": 0.35, "inspyrenet": 0.15},
+    "anime": _CARTOON_WEIGHTS,
+    "flat_cartoon": _CARTOON_WEIGHTS,
     "complex_multi": {"birefnet_hr": 0.50, "ben2": 0.40, "inspyrenet": 0.10},
-    # text_logo: BEN2 is best at clean-boundary objects; neural result used only as
-    # background hint for the color-key extractor in Stage D.
-    "text_logo":     {"birefnet_hr": 0.25, "ben2": 0.65, "inspyrenet": 0.10},
-    "generic":       {"birefnet_hr": 0.40, "ben2": 0.40, "inspyrenet": 0.20},
+    "text_logo": _TEXT_WEIGHTS,
+    "sticker_logo": _TEXT_WEIGHTS,
+    "text_glow": {"birefnet_hr": 0.35, "ben2": 0.50, "inspyrenet": 0.15},
+    "document_screenshot": _PRODUCT_WEIGHTS,
+    "solid_screen_keying": _PRODUCT_WEIGHTS,
+    "busy_scene": {"birefnet_hr": 0.50, "ben2": 0.40, "inspyrenet": 0.10},
+    "generic": _GENERIC_WEIGHTS,
 }
 
-# Which Stage-D expert to use per subject type.
+
 EXPERT_MAP: Dict[str, str] = {
-    "portrait":      "vitmatte",
-    "animal_fur":    "vitmatte",
-    "plant_thin":    "vitmatte",
-    "product":       "depth_only",
-    "transparent":   "depth_only",
-    "vehicle":       "depth_only",
-    "anime":         "depth_only",
-    "complex_multi": "depth_only",   # multi-object scenes need crisp edges, not ViTMatte blur
-    "text_logo":     "color_key",    # background-color-distance extraction
-    "generic":       "depth_only",
+    "portrait": "vitmatte",
+    "animal_fur": "vitmatte",
+    "plant_thin": "vitmatte",
+    "product": "depth_only",
+    "product_opaque": "depth_only",
+    "product_glass": "depth_only",
+    "transparent": "depth_only",
+    "transparent_object": "depth_only",
+    "vehicle": "depth_only",
+    "anime": "depth_only",
+    "flat_cartoon": "depth_only",
+    "complex_multi": "depth_only",
+    "text_logo": "color_key",
+    "sticker_logo": "color_key",
+    "text_glow": "color_key",
+    "document_screenshot": "depth_only",
+    "solid_screen_keying": "color_key",
+    "busy_scene": "depth_only",
+    "generic": "depth_only",
 }
 
 
 @dataclass
 class ClassificationResult:
-    subject_type: str           # one of SUBJECT_TYPES
-    scores: Dict[str, float]    # raw CLIP scores per type
-    expert: str                 # "vitmatte" | "depth_only"
+    subject_type: str
+    scores: Dict[str, float]
+    expert: str
     segmenter_weights: Dict[str, float]
 
 
 class SubjectClassifier:
     """
-    Zero-shot CLIP-based subject classifier.
+    Zero-shot CLIP-based subject/material advisor.
 
-    openai/clip-vit-base-patch32 — MIT/research-permissive, ~150 MB.
-    Falls back to "generic" gracefully if CLIP is unavailable.
+    The final route is still decided by the CG analyzer in stages/router.py.
+    CLIP can suggest image family/material, but it cannot bypass hard safety
+    rules such as "no chroma cleanup on busy natural borders".
     """
 
     _MODEL_ID = "openai/clip-vit-base-patch32"
@@ -106,7 +146,6 @@ class SubjectClassifier:
         self._model = CLIPModel.from_pretrained(self._MODEL_ID).to(self._device)
         self._model.eval()
 
-        # Pre-compute text features once.
         prompts = [_PROMPTS[t] for t in SUBJECT_TYPES]
         text_inputs = self._processor(text=prompts, return_tensors="pt", padding=True)
         text_inputs = {k: v.to(self._device) for k, v in text_inputs.items()}
@@ -122,9 +161,7 @@ class SubjectClassifier:
 
         import torch
 
-        rgb = image.convert("RGB")
-        # Resize to 224 — CLIP's native resolution.
-        thumb = rgb.resize((224, 224), Image.BILINEAR)
+        thumb = image.convert("RGB").resize((224, 224), Image.BILINEAR)
         inputs = self._processor(images=thumb, return_tensors="pt")
         inputs = {k: v.to(self._device) for k, v in inputs.items()}
 
@@ -138,6 +175,7 @@ class SubjectClassifier:
         probs = logits.squeeze().cpu().numpy()
         scores = {t: float(probs[i]) for i, t in enumerate(SUBJECT_TYPES)}
         subject_type = max(scores, key=scores.__getitem__)
+        subject_type = _resolve_close_subject(scores, subject_type)
 
         return ClassificationResult(
             subject_type=subject_type,
@@ -154,3 +192,27 @@ class SubjectClassifier:
             expert="depth_only",
             segmenter_weights=SEGMENTER_WEIGHTS["generic"],
         )
+
+
+def _resolve_close_subject(scores: Dict[str, float], winner: str) -> str:
+    winner_score = scores[winner]
+
+    # In background removal, a real person should usually win over nearby UI,
+    # text, table, or graphic cues. CLIP often sees a logo/table and a person
+    # with almost equal confidence; choosing portrait is the safer cutout route.
+    if (
+        winner in {
+            "text_logo", "sticker_logo", "text_glow", "document_screenshot",
+            "solid_screen_keying", "product", "product_opaque", "busy_scene",
+            "generic",
+        }
+        and scores.get("portrait", 0.0) >= winner_score * 0.86
+    ):
+        return "portrait"
+
+    # Glass/transparent product prompts overlap heavily. Prefer the more
+    # specific glass/product route when it is close to generic transparent.
+    if winner == "transparent" and scores.get("product_glass", 0.0) >= winner_score * 0.88:
+        return "product_glass"
+
+    return winner
