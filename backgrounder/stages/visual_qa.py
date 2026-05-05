@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import numpy as np
 from PIL import Image
+import numpy as np
 from scipy.ndimage import binary_dilation, binary_erosion, binary_propagation
 
 
@@ -14,6 +14,7 @@ _GRAPHIC_TYPES = {
     "document_screenshot",
     "solid_screen_keying",
 }
+_TEXT_TYPES = {"text_logo", "text_glow"}
 
 
 def visual_alpha_fixes(
@@ -64,7 +65,9 @@ def remove_checkerboard_background(
     h, w = alpha.shape
     border = _border_mask(h, w)
 
-    neutral = _neutral_mask(img, tolerance=10.0)
+    # JPEG-compressed checkerboards are rarely perfectly gray; the channels
+    # often drift by 15-20 values near text/glow edges.
+    neutral = _neutral_mask(img, tolerance=22.0)
     luma = _luma(img)
     border_neutral = neutral & border
     border_neutral_ratio = float(border_neutral.sum()) / max(1, int(border.sum()))
@@ -96,9 +99,12 @@ def remove_checkerboard_background(
     # them high alpha; non-checker high-alpha cores are protected.
     protect = binary_erosion((alpha > 0.985) & ~bg_like, structure=np.ones((3, 3), dtype=bool))
     editable = (connected | halo) & ~protect
+    if subject_type in _TEXT_TYPES:
+        editable |= bg_like & (alpha > 0.025)
 
     fixed = alpha.copy()
     fixed[editable] = 0.0
+
     fixed = np.where(fixed < 0.025, 0.0, fixed)
     changed = float(np.mean(np.abs(fixed - alpha)))
     status = "applied" if changed > 0.0001 else "no_change"
@@ -309,8 +315,9 @@ def _luma(rgb: np.ndarray) -> np.ndarray:
 def _portrait_protect_mask(rgb: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     hsv = _rgb_to_hsv(np.clip(rgb / 255.0, 0.0, 1.0))
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    luma = _luma(rgb)
     skin_hue = (h < 0.14) | (h > 0.92)
-    skin = skin_hue & (s > 0.10) & (s < 0.72) & (v > 0.34)
+    skin = skin_hue & (s > 0.10) & (s < 0.72) & (v > 0.34) & (luma > 82.0)
     white_cloth = (s < 0.34) & (v > 0.50)
     dark_cloth = (v < 0.18) & (alpha > 0.72)
     protect = (skin | white_cloth | dark_cloth) & (alpha > 0.24)

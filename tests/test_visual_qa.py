@@ -28,6 +28,27 @@ def test_checkerboard_background_is_removed_when_model_keeps_it() -> None:
     assert fixed[32:48, 30:50].mean() == 1.0
 
 
+def test_checkerboard_text_cleanup_removes_internal_holes_without_boosting_edges() -> None:
+    h = w = 80
+    yy, xx = np.indices((h, w))
+    checker = ((xx // 8) + (yy // 8)) % 2 == 0
+    dark = np.array([35, 31, 22], dtype=np.uint8)
+    light = np.array([99, 92, 82], dtype=np.uint8)
+    img = np.where(checker[..., None], light, dark).astype(np.uint8)
+    img[28:52, 18:62] = [238, 215, 142]
+    img[36:44, 36:44] = np.where(checker[36:44, 36:44, None], light, dark).astype(np.uint8)
+
+    alpha = np.full((h, w), 0.12, dtype=np.float32)
+    alpha[28:52, 18:62] = 0.35
+    alpha[36:44, 36:44] = 0.72
+    fixed, meta = remove_checkerboard_background(Image.fromarray(img), alpha, "text_glow")
+
+    assert meta["checkerboard_cleanup"] == "applied"
+    assert fixed[:8, :8].mean() == 0.0
+    assert fixed[36:44, 36:44].mean() == 0.0
+    assert fixed[30:34, 24:32].mean() == 0.35
+
+
 def test_graphic_border_residue_removes_connected_background_color_halo() -> None:
     bg = [60, 42, 118]
     img = np.zeros((80, 80, 3), dtype=np.uint8)
