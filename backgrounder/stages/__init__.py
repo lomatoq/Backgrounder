@@ -4,7 +4,7 @@ from .depth_refine import closed_form_matting_refine, smooth_alpha_boundary, unc
 from .expert_refine import expert_refine
 from .judge import score_alpha, QualityReport
 from .tiling import tile_process
-from .localize import sam2_refine
+from .localize import sam2_refine, sam3_refine
 from .transparency import transparency_refine
 from .solid_background import (
     despill_solid_background,
@@ -25,6 +25,7 @@ __all__ = [
     "QualityReport",
     "tile_process",
     "sam2_refine",
+    "sam3_refine",
     "transparency_refine",
     "despill_solid_background",
     "remove_solid_background_spill",

@@ -32,6 +32,7 @@ PRESETS = {
         "use_tta": False,
         "use_sdmatte": False,
         "force_sdmatte": False,
+        "use_sam3": False,
         "use_sam2": False,
         "use_owlv2": False,
     },
@@ -46,6 +47,7 @@ PRESETS = {
         "use_tta": False,
         "use_sdmatte": False,
         "force_sdmatte": False,
+        "use_sam3": False,
         "use_sam2": False,
         "use_owlv2": False,
     },
@@ -60,6 +62,7 @@ PRESETS = {
         "use_tta": True,
         "use_sdmatte": True,
         "force_sdmatte": False,
+        "use_sam3": True,
         "use_sam2": True,
         "use_owlv2": True,
     },
@@ -79,6 +82,7 @@ def _preset_values(name: str) -> list:
         preset["use_tta"],
         preset["use_sdmatte"],
         preset["force_sdmatte"],
+        preset["use_sam3"],
         preset["use_sam2"],
         preset["use_owlv2"],
     ]
@@ -167,6 +171,7 @@ def _get_pipeline(
     sdmatte_cache_dir: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
+    use_sam3: bool,
     use_sam2: bool,
     use_owlv2: bool,
 ):
@@ -177,7 +182,7 @@ def _get_pipeline(
         use_vitmatte, use_closed_form, use_uncertainty_sharpen,
         use_solid_background_cleanup, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
-        use_sam2, use_owlv2,
+        use_sam3, use_sam2, use_owlv2,
     )
     if _pipeline is not None and _pipeline_cfg.get("key") == cfg_key:
         return _pipeline
@@ -200,8 +205,9 @@ def _get_pipeline(
         sdmatte_cache_dir=sdmatte_cache_dir or "~/.cache/backgrounder/sdmatte",
         sdmatte_variant=sdmatte_variant,
         sdmatte_prompt_mode=sdmatte_prompt_mode,
+        use_sam3=use_sam3,
         use_sam2=use_sam2,
-        use_owlv2=use_owlv2 and use_sam2,
+        use_owlv2=use_owlv2 and (use_sam2 or use_sam3),
         fp16=(device == "cuda"),
     )
     _pipeline = BackgroundRemovalPipeline(config).load()
@@ -228,6 +234,7 @@ def remove_background(
     sdmatte_cache_dir: str,
     sdmatte_variant: str,
     sdmatte_prompt_mode: str,
+    use_sam3: bool,
     use_sam2: bool,
     use_owlv2: bool,
     subject_override: str,
@@ -254,6 +261,7 @@ def remove_background(
                 "passthrough": "existing_alpha",
                 "tta": False,
                 "sdmatte_used": False,
+                "sam3_used": False,
                 "sam2_used": False,
                 "solid_bg_spill_cleanup": "skipped_rgba_input",
                 "timings_ms": {"total": 0.0},
@@ -265,7 +273,7 @@ def remove_background(
         use_vitmatte, use_closed_form, use_uncertainty_sharpen,
         use_solid_background_cleanup, use_tta,
         use_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
-        use_sam2, use_owlv2,
+        use_sam3, use_sam2, use_owlv2,
     )
 
     # Per-request settings (don't require model reload)
@@ -300,6 +308,12 @@ def remove_background(
         "sdmatte_used": result.metadata.get("sdmatte_used", False),
         "sdmatte_forced": result.metadata.get("sdmatte_forced", False),
         "sdmatte_skipped": result.metadata.get("sdmatte_skipped", None),
+        "sam3_enabled": result.metadata.get("sam3_enabled", False),
+        "sam3_used": result.metadata.get("sam3_used", False),
+        "sam3_skipped": result.metadata.get("sam3_skipped", None),
+        "sam3_status": result.metadata.get("sam3_status", None),
+        "sam3_iou_with_alpha": result.metadata.get("sam3_iou_with_alpha", None),
+        "sam3_area_ratio": result.metadata.get("sam3_area_ratio", None),
         "sam2_used": result.metadata.get("sam2_used", False),
         "solid_bg_cleanup": result.metadata.get("solid_bg_cleanup", None),
         "solid_bg_cleanup_bg_rgb": result.metadata.get("bg_rgb", None),
@@ -423,6 +437,11 @@ def build_ui():
                         ["trimap", "bbox", "mask", "point"],
                         value="trimap", label="SDMatte prompt",
                     )
+                    use_sam3 = gr.Checkbox(
+                        value=False,
+                        label="SAM 3.1 refiner  (concept + box masks for hard busy scenes)",
+                        info="Requires official facebookresearch/sam3, CUDA, and facebook/sam3.1 access. Skips text/keyable plates.",
+                    )
                     use_sam2 = gr.Checkbox(
                         value=False,
                         label="SAM 2.1 refiner  (triggers when quality < 0.60 or complex_multi)",
@@ -430,8 +449,8 @@ def build_ui():
                     )
                     use_owlv2 = gr.Checkbox(
                         value=False,
-                        label="OWLv2 localizer  (box prompts for SAM 2.1)",
-                        info="Only active when SAM 2.1 is enabled · ~300 MB on first use",
+                        label="OWLv2 localizer  (box prompts for SAM)",
+                        info="Active when SAM 2.1 or SAM 3.1 is enabled · ~300 MB on first use",
                     )
 
                 btn = gr.Button("Remove background", variant="primary")
@@ -452,7 +471,7 @@ def build_ui():
             use_solid_background_cleanup,
             use_tta,
             use_sdmatte, force_sdmatte, sdmatte_cache_dir, sdmatte_variant, sdmatte_prompt_mode,
-            use_sam2, use_owlv2, subject_override, checkerboard,
+            use_sam3, use_sam2, use_owlv2, subject_override, checkerboard,
         ]
 
         btn.click(fn=remove_background, inputs=_inputs,
@@ -466,7 +485,7 @@ def build_ui():
                 segmenters, use_depth, use_classifier, use_vitmatte,
                 use_closed_form, use_uncertainty_sharpen,
                 use_solid_background_cleanup, use_tta,
-                use_sdmatte, force_sdmatte, use_sam2, use_owlv2,
+                use_sdmatte, force_sdmatte, use_sam3, use_sam2, use_owlv2,
             ],
         )
         update_btn.click(

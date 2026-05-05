@@ -15,6 +15,7 @@ from backgrounder.models import (
     ViTMatteRefiner,
     SDMatteRefiner,
     SAM2Segmenter,
+    SAM3Segmenter,
     OWLv2Localizer,
 )
 from backgrounder.models.base import BaseSegmenter
@@ -26,6 +27,7 @@ from backgrounder.stages import (
     score_alpha,
     tile_process,
     sam2_refine,
+    sam3_refine,
     transparency_refine,
     despill_solid_background,
     remove_solid_background_spill,
@@ -81,6 +83,8 @@ class BackgroundRemovalPipeline:
         self._sdmatte: Optional[SDMatteRefiner] = None
         self._classifier = None
         self._sam2: Optional[SAM2Segmenter] = None
+        self._sam3: Optional[SAM3Segmenter] = None
+        self._sam3_load_error: Optional[str] = None
         self._owlv2: Optional[OWLv2Localizer] = None
         self._ready = False
 
@@ -139,6 +143,24 @@ class BackgroundRemovalPipeline:
                 model_id=self.config.sam2_model_id,
             )
             self._sam2.load()
+
+        if self.config.use_sam3:
+            if self._device != "cuda":
+                self._sam3_load_error = f"SAM 3.1 requires CUDA, current device is '{self._device}'"
+            else:
+                try:
+                    self._sam3 = SAM3Segmenter(
+                        device=self._device,
+                        fp16=self._fp16,
+                        model_version=self.config.sam3_model_version,
+                        checkpoint_path=self.config.sam3_checkpoint_path,
+                        confidence_threshold=self.config.sam3_confidence_threshold,
+                    )
+                    self._sam3.load()
+                except Exception as exc:
+                    import warnings
+                    self._sam3_load_error = str(exc)
+                    warnings.warn(f"SAM 3.1 disabled: {exc}")
 
         if self.config.use_owlv2:
             self._owlv2 = OWLv2Localizer(
@@ -464,6 +486,64 @@ class BackgroundRemovalPipeline:
                 meta["sdmatte_skipped"] = f"quality {round(report.score,3)} >= trigger {round(sdmatte_trigger,3)}"
 
         # Stage G — SAM 2.1 refinement (Phase 3, optional)
+        if self.config.use_sam3:
+            meta["sam3_enabled"] = True
+            if self._sam3_load_error:
+                meta["sam3_skipped"] = self._sam3_load_error
+            elif self._sam3 is None:
+                meta["sam3_skipped"] = "not_loaded"
+            elif _sam3_should_skip(subject_type, route):
+                meta["sam3_skipped"] = "route_uses_keying_or_text_cleanup"
+            else:
+                _need_sam3 = (
+                    report.score < self.config.sam3_quality_trigger
+                    or subject_type in {
+                        "complex_multi",
+                        "portrait",
+                        "product",
+                        "product_opaque",
+                        "product_glass",
+                        "transparent",
+                        "transparent_object",
+                        "busy_scene",
+                    }
+                    or meta.get("route_background") == "busy"
+                )
+                if _need_sam3:
+                    with timer("stage_G_sam3", meta["timings_ms"]):
+                        alpha_sam3, sam3_meta = sam3_refine(
+                            image=image,
+                            alpha=alpha,
+                            sam3=self._sam3,
+                            owlv2=self._owlv2,
+                            subject_type=subject_type,
+                        )
+                        meta.update(sam3_meta)
+                        report_sam3 = score_alpha(
+                            alpha_sam3,
+                            depth_edges=depth_edges,
+                            confidence=ben2_confidence,
+                        )
+                        accept = (
+                            sam3_meta.get("sam3_status") == "applied"
+                            and report_sam3.score >= report.score - 0.12
+                        )
+                        meta["sam3_used"] = bool(accept)
+                        meta["sam3_accepted"] = bool(accept)
+                        meta["sam3_score"] = round(report_sam3.score, 3)
+                        if accept:
+                            alpha = alpha_sam3
+                            report = report_sam3
+                            meta["quality"] = str(report_sam3)
+                            meta["quality_sam3"] = str(report_sam3)
+                else:
+                    meta["sam3_skipped"] = (
+                        f"quality {round(report.score,3)} >= trigger "
+                        f"{round(self.config.sam3_quality_trigger,3)}"
+                    )
+        else:
+            meta["sam3_enabled"] = False
+
         if self._sam2 is not None:
             _need_sam2 = (
                 report.score < self.config.sam2_quality_trigger
@@ -653,6 +733,12 @@ def _normalize_graphic_alpha(alpha: np.ndarray, subject_type: str) -> np.ndarray
     lifted = np.where(lifted > 0.94, 1.0, lifted)
     lifted = np.where(lifted < 0.025, 0.0, lifted)
     return np.clip(np.maximum(alpha * 0.25, lifted), 0.0, 1.0).astype(np.float32)
+
+
+def _sam3_should_skip(subject_type: str, route) -> bool:
+    if subject_type in {"text_logo", "text_glow", "document_screenshot", "solid_screen_keying"}:
+        return True
+    return bool(route.clean_border and route.keyable)
 
 
 def _display_expert_name(expert: str) -> str:

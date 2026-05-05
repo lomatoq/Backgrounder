@@ -92,6 +92,15 @@ class PipelineConfig:
     sam2_model_id: str = "facebook/sam2.1-hiera-base-plus"
     sam2_quality_trigger: float = 0.60
 
+    # Phase 4: SAM 3.1 concept/box mask refinement (Meta SAM 3 repo).
+    # Optional because it requires the external facebookresearch/sam3 package,
+    # CUDA, and access to the facebook/sam3.1 checkpoint on Hugging Face.
+    use_sam3: bool = False
+    sam3_model_version: str = "sam3.1"
+    sam3_checkpoint_path: str | None = None
+    sam3_quality_trigger: float = 0.88
+    sam3_confidence_threshold: float = 0.30
+
     # Phase 3: OWLv2 open-vocabulary localizer (Apache-2.0).
     # Supplies bounding-box prompts to SAM 2.1 for multi-object scenes.
     use_owlv2: bool = False

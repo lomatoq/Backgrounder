@@ -33,6 +33,7 @@ def main() -> None:
     parser.add_argument("--segmenters", default="birefnet_hr,ben2")
     parser.add_argument("--sdmatte", action="store_true", help="Enable SDMatte, still route-gated.")
     parser.add_argument("--force-sdmatte", action="store_true", help="Force SDMatte on every image.")
+    parser.add_argument("--sam3", action="store_true", help="Enable optional SAM 3.1 refinement.")
     parser.add_argument("--tta", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
@@ -50,6 +51,7 @@ def main() -> None:
         device=Device(args.device),
         use_sdmatte=args.sdmatte,
         force_sdmatte=args.force_sdmatte and args.sdmatte,
+        use_sam3=args.sam3,
         use_tta=args.tta,
         subject_type_override=args.subject,
     )
@@ -86,6 +88,8 @@ def main() -> None:
             "busy_graphic_despill": result.metadata.get("busy_graphic_despill", False),
             "foreground_decontam": result.metadata.get("foreground_decontam"),
             "sdmatte_used": result.metadata.get("sdmatte_used", False),
+            "sam3_used": result.metadata.get("sam3_used", False),
+            "sam3_skipped": result.metadata.get("sam3_skipped"),
             "sam2_used": result.metadata.get("sam2_used", False),
             "total_ms": result.metadata.get("timings_ms", {}).get("total"),
         }

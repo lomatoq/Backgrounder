@@ -15,3 +15,7 @@ opencv-python-headless>=4.8.0
 diffusers>=0.30.0
 accelerate>=0.30.0
 safetensors>=0.4.0
+
+# SAM 3.1 optional backend:
+# install official repo manually, e.g. pip install git+https://github.com/facebookresearch/sam3.git
+# Requires CUDA + compatible PyTorch and access to facebook/sam3.1 on Hugging Face.
