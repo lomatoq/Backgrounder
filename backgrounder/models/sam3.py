@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Any, Optional
 
 import numpy as np
@@ -61,6 +62,7 @@ class SAM3Segmenter:
         self._model = None
         self._processor = None
         self._loaded = False
+        self._last_error: str | None = None
 
     def load(self) -> "SAM3Segmenter":
         if not self._loaded:
@@ -89,10 +91,12 @@ class SAM3Segmenter:
             device=self._device,
             eval_mode=True,
             enable_segmentation=True,
-            enable_inst_interactivity=True,
+            enable_inst_interactivity=False,
         )
         if hasattr(self._model, "to"):
-            self._model = self._model.to(device=self._device, dtype=self._dtype)
+            # SAM3's image processor expects mixed bf16 activations on CUDA. Casting
+            # the full model to fp16 makes the official decoder hit dtype mismatches.
+            self._model = self._model.to(device=self._device)
         if hasattr(self._model, "eval"):
             self._model.eval()
 
@@ -125,6 +129,7 @@ class SAM3Segmenter:
             "sam3_prompt": prompt,
             "sam3_model_version": self._model_version,
         }
+        self._last_error = None
 
         masks = self._predict_with_text(rgb, prompt)
         source = "text"
@@ -137,6 +142,8 @@ class SAM3Segmenter:
 
         if masks is None or masks.size == 0:
             meta["sam3_status"] = "skipped_no_masks"
+            if self._last_error:
+                meta["sam3_error"] = self._last_error[:240]
             return coarse_alpha, meta
 
         sam_mask = _union_masks(masks, (h, w))
@@ -149,15 +156,19 @@ class SAM3Segmenter:
         if self._processor is None:
             return None
         try:
-            state = self._processor.set_image(image)
-            output = self._processor.set_text_prompt(state=state, prompt=prompt)
+            with self._autocast():
+                state = self._processor.set_image(image)
+                output = self._processor.set_text_prompt(state=state, prompt=prompt)
         except TypeError:
             try:
-                state = self._processor.set_image(image=image)
-                output = self._processor.set_text_prompt(state=state, prompt=prompt)
-            except Exception:
+                with self._autocast():
+                    state = self._processor.set_image(image=image)
+                    output = self._processor.set_text_prompt(state=state, prompt=prompt)
+            except Exception as exc:
+                self._last_error = f"{type(exc).__name__}: {exc}"
                 return None
-        except Exception:
+        except Exception as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
             return None
         return _extract_masks(output, self._confidence_threshold)
 
@@ -169,10 +180,13 @@ class SAM3Segmenter:
         if self._processor is None or not boxes:
             return None
         try:
-            state = self._processor.set_image(image)
+            with self._autocast():
+                state = self._processor.set_image(image)
         except TypeError:
-            state = self._processor.set_image(image=image)
-        except Exception:
+            with self._autocast():
+                state = self._processor.set_image(image=image)
+        except Exception as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
             return None
 
         w, h = image.size
@@ -185,26 +199,35 @@ class SAM3Segmenter:
             bh = max(1.0, y2 - y1) / max(1, h)
             norm_box = [float(cx), float(cy), float(bw), float(bh)]
             try:
-                output = self._processor.add_geometric_prompt(
-                    state=state,
-                    box=norm_box,
-                    label=True,
-                )
+                with self._autocast():
+                    output = self._processor.add_geometric_prompt(
+                        state=state,
+                        box=norm_box,
+                        label=True,
+                    )
                 if isinstance(output, dict) and "state" in output:
                     state = output["state"]
             except TypeError:
                 try:
-                    output = self._processor.add_geometric_prompt(
-                        state,
-                        box=norm_box,
-                        label=True,
-                    )
-                except Exception:
+                    with self._autocast():
+                        output = self._processor.add_geometric_prompt(
+                            state,
+                            box=norm_box,
+                            label=True,
+                        )
+                except Exception as exc:
+                    self._last_error = f"{type(exc).__name__}: {exc}"
                     continue
-            except Exception:
+            except Exception as exc:
+                self._last_error = f"{type(exc).__name__}: {exc}"
                 continue
 
         return _extract_masks(output, self._confidence_threshold)
+
+    def _autocast(self):
+        if self._device.startswith("cuda"):
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return nullcontext()
 
     def unload(self) -> None:
         del self._model, self._processor

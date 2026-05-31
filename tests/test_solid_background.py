@@ -49,6 +49,24 @@ def test_connected_key_does_not_punch_enclosed_blue_foreground_detail() -> None:
     assert cleaned[24:72, 24:72].mean() > 0.95
 
 
+def test_large_enclosed_screen_hole_is_removed_for_flat_cartoon() -> None:
+    bg = [50, 85, 239]
+    img = np.zeros((128, 128, 3), dtype=np.uint8)
+    img[:] = bg
+    alpha = np.ones((128, 128), dtype=np.float32)
+
+    img[22:106, 22:106] = [245, 210, 80]
+    img[48:82, 52:78] = bg
+
+    cleaned, meta = remove_solid_background_spill(Image.fromarray(img), alpha, "flat_cartoon")
+
+    assert meta["solid_bg_spill_cleanup"] == "applied"
+    assert meta["solid_bg_enclosed_hole_cleanup"] == "applied"
+    assert cleaned[:8, :8].mean() == 0.0
+    assert cleaned[52:78, 56:74].mean() == 0.0
+    assert cleaned[28:44, 30:98].mean() == 1.0
+
+
 def test_busy_border_skips_solid_background_cleanup() -> None:
     rng = np.random.default_rng(7)
     img = rng.integers(0, 255, size=(96, 96, 3), dtype=np.uint8)

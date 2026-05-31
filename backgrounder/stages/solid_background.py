@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import binary_dilation, binary_erosion, binary_propagation
+from scipy.ndimage import binary_dilation, binary_erosion, binary_propagation, find_objects, label
 
 
 _GRAPHIC_TYPES = {
@@ -165,11 +165,19 @@ def remove_solid_background_spill(
         bg_color=bg_color,
         subject_type=subject_type,
     )
+    enclosed_bg, enclosed_meta = _enclosed_background_holes(
+        keep=keep,
+        connected_bg=connected_bg,
+        alpha=alpha,
+        protect=protect,
+        subject_type=subject_type,
+    )
 
     cleaned = alpha.copy()
-    editable = candidate & ~protect
+    editable = (candidate | enclosed_bg) & ~protect
     cleaned[editable] = np.minimum(cleaned[editable], keep[editable])
     cleaned[connected_bg & ~protect & (keep < 0.16)] = 0.0
+    cleaned[enclosed_bg & ~protect & (keep < 0.20)] = 0.0
     cleaned = np.where(cleaned < 0.06, 0.0, cleaned)
     cleaned = np.where(cleaned > 0.985, 1.0, cleaned)
 
@@ -184,6 +192,7 @@ def remove_solid_background_spill(
         **chroma_meta,
         **connected_meta,
         **protect_meta,
+        **enclosed_meta,
     }
 
 
@@ -346,6 +355,54 @@ def _screen_color_keep(
         "solid_bg_value_full": round(value_full, 3),
         "solid_bg_key_channel": ["red", "green", "blue"][key_channel],
         "solid_bg_key_dominance": round(bg_dominance, 3),
+    }
+
+
+def _enclosed_background_holes(
+    keep: np.ndarray,
+    connected_bg: np.ndarray,
+    alpha: np.ndarray,
+    protect: np.ndarray,
+    subject_type: str,
+) -> tuple[np.ndarray, dict]:
+    if subject_type not in {"anime", "flat_cartoon", "sticker_logo", "solid_screen_keying"}:
+        return np.zeros_like(keep, dtype=bool), {
+            "solid_bg_enclosed_hole_cleanup": "skipped_subject",
+        }
+
+    exact_bg = (keep < 0.20) & ~connected_bg & (alpha > 0.06) & ~protect
+    if not exact_bg.any():
+        return np.zeros_like(keep, dtype=bool), {
+            "solid_bg_enclosed_hole_cleanup": "no_candidates",
+        }
+
+    labeled, _count = label(exact_bg)
+    objects = find_objects(labeled)
+    min_area = max(180, int(alpha.size * 0.00012))
+    max_area = int(alpha.size * 0.10)
+    holes = np.zeros_like(exact_bg, dtype=bool)
+    kept_components = 0
+    for idx, slc in enumerate(objects, 1):
+        if slc is None:
+            continue
+        comp = labeled[slc] == idx
+        area = int(comp.sum())
+        if area < min_area or area > max_area:
+            continue
+        ys, xs = slc
+        height = max(1, ys.stop - ys.start)
+        width = max(1, xs.stop - xs.start)
+        if min(height, width) < 4:
+            continue
+        holes[slc] |= comp
+        kept_components += 1
+
+    status = "applied" if kept_components else "no_large_components"
+    return holes, {
+        "solid_bg_enclosed_hole_cleanup": status,
+        "solid_bg_enclosed_hole_components": kept_components,
+        "solid_bg_enclosed_hole_ratio": round(float(holes.mean()), 5),
+        "solid_bg_enclosed_hole_min_area": int(min_area),
     }
 
 

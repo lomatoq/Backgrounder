@@ -101,6 +101,15 @@ def remove_checkerboard_background(
     editable = (connected | halo) & ~protect
     if subject_type in _TEXT_TYPES:
         editable |= bg_like & (alpha > 0.025)
+        expanded = _text_checker_shadow_mask(
+            img=img,
+            alpha=alpha,
+            luma=luma,
+            bg_like=bg_like,
+            lo=lo,
+            hi=hi,
+        )
+        editable |= expanded & (alpha > 0.025)
 
     fixed = alpha.copy()
     fixed[editable] = 0.0
@@ -115,7 +124,38 @@ def remove_checkerboard_background(
         "checkerboard_luma_hi": round(hi, 2),
         "checkerboard_connected_ratio": round(float(connected.mean()), 5),
         "checkerboard_alpha_delta_mean": round(changed, 5),
+        "checkerboard_text_expanded_ratio": round(float((editable & ~bg_like).mean()), 5),
     }
+
+
+def _text_checker_shadow_mask(
+    img: np.ndarray,
+    alpha: np.ndarray,
+    luma: np.ndarray,
+    bg_like: np.ndarray,
+    lo: float,
+    hi: float,
+) -> np.ndarray:
+    """
+    JPEG/screenshot checkerboards often leave dark neutral pixels inside glyph
+    counters that are no longer close enough to the two sampled tones. Only use
+    this wider key for bright text over a dark checker plate.
+    """
+    if hi >= 150.0:
+        return np.zeros(alpha.shape, dtype=bool)
+
+    foregroundish = (alpha > 0.45) & ~bg_like
+    if int(foregroundish.sum()) < 32:
+        return np.zeros(alpha.shape, dtype=bool)
+    bright_ref = float(np.percentile(luma[foregroundish], 70))
+    if bright_ref < 135.0:
+        return np.zeros(alpha.shape, dtype=bool)
+
+    neutral_wide = _neutral_mask(img, tolerance=38.0)
+    span = max(18.0, hi - lo)
+    lower = max(0.0, lo - 18.0)
+    upper = min(150.0, hi + max(34.0, span * 0.85))
+    return neutral_wide & (luma >= lower) & (luma <= upper)
 
 
 def remove_graphic_border_residue(

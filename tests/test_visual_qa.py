@@ -49,6 +49,35 @@ def test_checkerboard_text_cleanup_removes_internal_holes_without_boosting_edges
     assert fixed[30:34, 24:32].mean() == 0.35
 
 
+def test_checkerboard_text_cleanup_removes_jpeg_dark_counter_residue() -> None:
+    h = w = 96
+    yy, xx = np.indices((h, w))
+    checker = ((xx // 8) + (yy // 8)) % 2 == 0
+    dark = np.array([35, 33, 31], dtype=np.uint8)
+    light = np.array([98, 96, 92], dtype=np.uint8)
+    img = np.where(checker[..., None], light, dark).astype(np.uint8)
+
+    # Bright neutral-ish text fill must survive.
+    img[26:70, 16:80] = [244, 239, 228]
+    # Counter/hole pixels are JPEG-drifted checker tones: no longer close enough
+    # for the strict two-tone key, but still visibly background.
+    img[40:56, 38:58] = np.where(
+        checker[40:56, 38:58, None],
+        [118, 115, 109],
+        [49, 46, 42],
+    ).astype(np.uint8)
+
+    alpha = np.zeros((h, w), dtype=np.float32)
+    alpha[26:70, 16:80] = 1.0
+    alpha[40:56, 38:58] = 0.82
+    fixed, meta = remove_checkerboard_background(Image.fromarray(img), alpha, "text_glow")
+
+    assert meta["checkerboard_cleanup"] == "applied"
+    assert meta["checkerboard_text_expanded_ratio"] > 0.0
+    assert fixed[40:56, 38:58].mean() == 0.0
+    assert fixed[30:36, 24:72].mean() == 1.0
+
+
 def test_graphic_border_residue_removes_connected_background_color_halo() -> None:
     bg = [60, 42, 118]
     img = np.zeros((80, 80, 3), dtype=np.uint8)
