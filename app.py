@@ -244,9 +244,22 @@ def remove_background(
     """
     Returns: (result_rgba, preview_on_checker, info_text)
     """
-    import gradio as gr
     if progress is None:
-        progress = gr.Progress()
+        try:
+            import gradio as gr
+            progress = gr.Progress()
+        except Exception:
+            progress = None
+
+    # Progress reporting is best-effort: never let it break a request.
+    def _safe_progress(frac: float, desc: str = "") -> None:
+        if progress is None:
+            return
+        try:
+            progress(frac, desc=desc)
+        except Exception:
+            pass
+
     if image is None:
         return None, None, "Upload an image first."
 
@@ -272,7 +285,7 @@ def remove_background(
             }
             return image, preview, json.dumps(info, indent=2)
 
-    progress(0.0, desc="Loading models (first run downloads weights)…")
+    _safe_progress(0.0, "Loading models (first run downloads weights)…")
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
         use_vitmatte, use_closed_form, use_uncertainty_sharpen,
@@ -290,7 +303,7 @@ def remove_background(
         "Max Quality": "max",
     }.get(mode, "smart")
 
-    result = pipeline.process(image, progress=progress)
+    result = pipeline.process(image, progress=_safe_progress)
 
     # Compose over checkerboard for visual preview
     preview = _compose_checker(result.rgba) if checkerboard else result.rgba

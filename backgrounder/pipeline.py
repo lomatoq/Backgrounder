@@ -272,7 +272,7 @@ class BackgroundRemovalPipeline:
         if self.config.tile_size > 0 and (W > self.config.tile_size or H > self.config.tile_size):
             result = self._process_tiled(image)
         else:
-            result = self._process_single(image, report=_report)
+            result = self._process_single(image, prog=_report)
 
         # Upscale alpha/rgba back to original resolution if we downscaled.
         if scale < 1.0:
@@ -300,8 +300,8 @@ class BackgroundRemovalPipeline:
     # Internal                                                             #
     # ------------------------------------------------------------------ #
 
-    def _process_single(self, image: Image.Image, report=None) -> MattingResult:
-        report = report or _ProgressReporter(None)
+    def _process_single(self, image: Image.Image, prog=None) -> MattingResult:
+        prog = prog or _ProgressReporter(None)
         meta: dict = {"device": self._device, "timings_ms": {}}
         t_total = time.perf_counter()
         W, H = image.size
@@ -314,7 +314,7 @@ class BackgroundRemovalPipeline:
         subject_type = "generic"
 
         if self._classifier is not None:
-            report(0.08, "Classifying subject")
+            prog(0.08, "Classifying subject")
             print("[Stage A] Classifying subject type...", flush=True)
             with timer("stage_A_classify", meta["timings_ms"]):
                 if self.config.subject_type_override:
@@ -355,7 +355,7 @@ class BackgroundRemovalPipeline:
         # Stage B — Coarse ensemble
         tta_on = self.config.use_tta
         tta_tag = " +TTA" if tta_on else ""
-        report(0.15, "Segmenter ensemble")
+        prog(0.15, "Segmenter ensemble")
         print(f"[Stage B] Running segmenter ensemble ({len(self._segmenters)} models{tta_tag})...", flush=True)
         with timer("stage_B_ensemble", meta["timings_ms"]):
             alpha, uncertainty, outputs = ensemble_predict(
@@ -406,7 +406,7 @@ class BackgroundRemovalPipeline:
             try:
                 with timer("stage_B2_failure_map", meta["timings_ms"]):
                     model_alphas = [o.alpha for o in outputs if o.alpha is not None]
-                    report(0.32, "Failure-map + routing")
+                    prog(0.32, "Failure-map + routing")
                     failure_map = compute_failure_map(
                         image,
                         alpha,
@@ -455,7 +455,7 @@ class BackgroundRemovalPipeline:
             )
 
         # Stage D — Expert refinement (Phase 2: routed; Phase 1: depth-only)
-        report(0.45, "Refining alpha")
+        prog(0.45, "Refining alpha")
         print(f"[Stage D] Refining alpha (expert={_display_expert_name(expert)})...", flush=True)
         vit = self._ensure_vitmatte()  # lazy; None unless ViTMatte is enabled
         with timer("stage_D_refine", meta["timings_ms"]):
@@ -569,7 +569,7 @@ class BackgroundRemovalPipeline:
                 run_sdmatte = self.config.force_sdmatte or (auto_allowed and report.score < sdmatte_trigger)
             if run_sdmatte:
                 reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
-                report(0.62, "SDMatte refining")
+                prog(0.62, "SDMatte refining")
                 print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
                 sd = self._ensure_sdmatte()  # lazy: load ~5 GB only now
                 if sd is None:
@@ -649,7 +649,7 @@ class BackgroundRemovalPipeline:
                     else:
                         sam3_executed = True
                         with timer("stage_G_sam3", meta["timings_ms"]):
-                            report(0.78, "SAM 3.1 refining")
+                            prog(0.78, "SAM 3.1 refining")
                             alpha_sam3, sam3_meta = sam3_refine(
                                 image=image,
                                 alpha=alpha,
@@ -748,7 +748,7 @@ class BackgroundRemovalPipeline:
             meta.update(visual_meta)
 
         # Stage E — Foreground decontamination
-        report(0.92, "Foreground decontamination")
+        prog(0.92, "Foreground decontamination")
         with timer("stage_E_decontam", meta["timings_ms"]):
             image_np = np.array(image.convert("RGB"))
 
