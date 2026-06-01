@@ -16,8 +16,25 @@ function Test-PortFree {
 }
 
 function Resolve-Python {
+    # Prefer a project virtualenv that has the full model stack (incl. SAM 3.1).
+    # Falls back to PATH python only if no venv is present. This avoids the common
+    # mistake of launching with the system interpreter, where heavy experts such
+    # as sam3 are not installed and silently get skipped.
+    $venvCandidates = @(
+        Join-Path $Root ".venv-sam3\Scripts\python.exe",
+        Join-Path $Root ".venv\Scripts\python.exe",
+        Join-Path $Root "venv\Scripts\python.exe"
+    )
+    foreach ($candidate in $venvCandidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            Write-Host "Using project venv: $candidate" -ForegroundColor Green
+            return $candidate
+        }
+    }
+
     $python = Get-Command python -ErrorAction SilentlyContinue
     if ($python) {
+        Write-Host "No project venv found; falling back to PATH python: $($python.Source)" -ForegroundColor Yellow
         return $python.Source
     }
 
