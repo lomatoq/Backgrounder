@@ -663,12 +663,25 @@ class BackgroundRemovalPipeline:
                                 depth_edges=depth_edges,
                                 confidence=ben2_confidence,
                             )
-                            accept = (
-                                sam3_meta.get("sam3_status") == "applied"
-                                and report_sam3.score >= report.score - 0.12
+                            # Trust a strong SAM 3.1 segmentation over the weak
+                            # no-reference score. When SAM strongly agrees with the
+                            # coarse shape (high IoU, area ≈ unchanged) it is a safe,
+                            # confident refinement — solidifying a dark suit interior
+                            # can *lower* score_alpha even though it is visually
+                            # correct, so the plain score gate wrongly rejected it.
+                            iou = sam3_meta.get("sam3_iou_with_alpha") or 0.0
+                            ar = sam3_meta.get("sam3_area_ratio") or 0.0
+                            strong_geometry = iou >= 0.90 and 0.80 <= ar <= 1.25
+                            accept = sam3_meta.get("sam3_status") == "applied" and (
+                                report_sam3.score >= report.score - 0.12
+                                or strong_geometry
                             )
                             meta["sam3_used"] = bool(accept)
                             meta["sam3_accepted"] = bool(accept)
+                            meta["sam3_accept_reason"] = (
+                                "strong_geometry" if (accept and report_sam3.score < report.score - 0.12)
+                                else ("score_ok" if accept else "rejected")
+                            )
                             meta["sam3_score"] = round(report_sam3.score, 3)
                             if accept:
                                 alpha = alpha_sam3
