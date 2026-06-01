@@ -15,8 +15,9 @@ def closed_form_matting_refine(
     radius: int = 1,
     eps: float = 1e-7,
     constraint_weight: float = 100.0,
-    prior_weight: float = 0.01,
+    prior_weight: float = 0.05,
     max_solve_pixels: int = 65_536,
+    edge_gate: bool = True,
 ) -> np.ndarray:
     """
     Levin et al. closed-form alpha matting refinement.
@@ -24,6 +25,14 @@ def closed_form_matting_refine(
     The solve is performed on a bounded resolution for predictable latency, then
     composited back only into trimap unknown pixels. Definite fg/bg pixels stay
     anchored to the coarse matte.
+
+    edge_gate : matting only carries information at genuine colour edges. In flat
+        / low-contrast regions the Laplacian is unconstrained and can collapse the
+        unknown band toward 0 — the salt-speckle failure on dark, low-contrast
+        areas (e.g. a dark suit on a dark background). When True, the solved alpha
+        is blended back toward the coarse matte by local colour-gradient
+        confidence, so flat regions keep their coarse value and only real edges are
+        re-matted.
     """
     h, w = alpha.shape
     if not np.any(trimap == 128):
@@ -64,6 +73,16 @@ def closed_form_matting_refine(
         ).astype(np.float32) / 255.0
     else:
         refined = refined_s
+
+    if edge_gate:
+        # Confidence in the matting solution = local colour-gradient strength.
+        # Flat regions (≈0) fall back to the coarse alpha; real edges (→1) keep
+        # the re-matted result. This is what prevents low-contrast unknown bands
+        # from collapsing into transparent speckle.
+        img_full = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        grad = np.abs(np.gradient(img_full, axis=0)).sum(-1) + np.abs(np.gradient(img_full, axis=1)).sum(-1)
+        edge_conf = np.clip(gaussian_filter(grad, sigma=1.0) / 0.12, 0.0, 1.0).astype(np.float32)
+        refined = alpha.astype(np.float32) + edge_conf * (refined - alpha.astype(np.float32))
 
     unknown = (trimap == 128).astype(np.float32)
     result = alpha * (1.0 - unknown) + refined * unknown
