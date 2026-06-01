@@ -46,6 +46,22 @@ function Resolve-Python {
     throw "Python was not found on PATH."
 }
 
+# Kill any previously launched Backgrounder app so a relaunch never collides with
+# a stale instance (which would hold the port + GPU memory). Only targets python
+# processes whose command line runs this repo's app.py.
+function Stop-ExistingApp {
+    $running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match 'app\.py' }
+    foreach ($proc in $running) {
+        # Don't kill ourselves (this PowerShell host is not python anyway).
+        Write-Host "Stopping previous app instance (PID $($proc.ProcessId))..." -ForegroundColor Yellow
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if ($running) { Start-Sleep -Seconds 2 }
+}
+
+Stop-ExistingApp
+
 $SelectedPort = $null
 foreach ($Candidate in $Port..$MaxPort) {
     if (Test-PortFree -PortToCheck $Candidate) {
