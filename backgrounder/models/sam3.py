@@ -328,6 +328,10 @@ def _fuse_sam3_mask(alpha: np.ndarray, sam_mask: np.ndarray) -> tuple[np.ndarray
 
     sam_dil = binary_dilation(sam_mask, structure=np.ones((3, 3), dtype=bool), iterations=2)
     sam_core = binary_erosion(sam_mask, structure=np.ones((3, 3), dtype=bool), iterations=1)
+    # Deep interior of a confident SAM segmentation is solid foreground. The
+    # silhouette / soft-edge band (hair, fur) lives within a few px of the mask
+    # boundary, so an eroded interior never touches it.
+    sam_interior = binary_erosion(sam_mask, structure=np.ones((3, 3), dtype=bool), iterations=4)
 
     refined = alpha.copy()
     remove = (alpha > 0.025) & (alpha < 0.94) & ~sam_dil
@@ -335,11 +339,20 @@ def _fuse_sam3_mask(alpha: np.ndarray, sam_mask: np.ndarray) -> tuple[np.ndarray
 
     fill = sam_core & (alpha > 0.08) & (alpha < 0.70)
     refined[fill] = np.maximum(refined[fill], 0.76)
+
+    # Solidify the confident interior regardless of how low the base alpha is.
+    # This removes sub-threshold salt speckle (alpha < 0.08) *inside* the body —
+    # the dark-suit-on-dark-background failure — which the fill above skips at the
+    # silhouette. Edges are protected by the 4-px erosion.
+    interior_speckle = sam_interior & (refined < 0.94)
+    refined[sam_interior] = np.maximum(refined[sam_interior], 0.985)
+
     refined = np.where(refined < 0.025, 0.0, refined)
 
     meta["sam3_status"] = "applied"
     meta["sam3_removed_ratio"] = round(float(remove.mean()), 5)
     meta["sam3_filled_ratio"] = round(float(fill.mean()), 5)
+    meta["sam3_interior_solidified_ratio"] = round(float(interior_speckle.mean()), 5)
     return np.clip(refined, 0.0, 1.0).astype(np.float32), meta
 
 
