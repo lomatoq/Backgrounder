@@ -48,6 +48,7 @@ def visual_alpha_fixes(
         image=image,
         alpha=fixed,
         subject_type=subject_type,
+        route_meta=route_meta,
     )
     meta.update(portrait_meta)
 
@@ -215,9 +216,20 @@ def remove_portrait_lower_surface(
     image: Image.Image,
     alpha: np.ndarray,
     subject_type: str,
+    route_meta: dict | None = None,
 ) -> tuple[np.ndarray, dict]:
     if subject_type != "portrait":
         return alpha, {"portrait_lower_surface_cleanup": "skipped_subject"}
+
+    # This heuristic removes a table/counter/floor the salient-object models
+    # wrongly keep under a person. But it samples the "surface" colour from the
+    # widest lower foreground — which on a person in dark clothing is the *suit
+    # itself*, so it keys out the body into speckle. When a strong segmentation
+    # (SAM 3.1 / SAM 2.1) has already produced a confident silhouette, trust it
+    # and skip this destructive re-key.
+    route_meta = route_meta or {}
+    if route_meta.get("sam3_used") or route_meta.get("sam2_used"):
+        return alpha, {"portrait_lower_surface_cleanup": "skipped_confident_segmentation"}
 
     img = np.asarray(image.convert("RGB"), dtype=np.float32)
     h, w = alpha.shape

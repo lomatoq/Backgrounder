@@ -353,7 +353,28 @@ def _fuse_sam3_mask(alpha: np.ndarray, sam_mask: np.ndarray) -> tuple[np.ndarray
     meta["sam3_removed_ratio"] = round(float(remove.mean()), 5)
     meta["sam3_filled_ratio"] = round(float(fill.mean()), 5)
     meta["sam3_interior_solidified_ratio"] = round(float(interior_speckle.mean()), 5)
+
+    _debug_dump_fuse(alpha, sam_mask, sam_interior, refined)
     return np.clip(refined, 0.0, 1.0).astype(np.float32), meta
+
+
+def _debug_dump_fuse(alpha, sam_mask, sam_interior, refined) -> None:
+    """Save intermediate masks as PNGs when BACKGROUNDER_DEBUG_DIR is set."""
+    import os
+    out = os.environ.get("BACKGROUNDER_DEBUG_DIR")
+    if not out:
+        return
+    try:
+        os.makedirs(out, exist_ok=True)
+        def _save(arr, name):
+            a = np.clip(np.asarray(arr, dtype=np.float32), 0.0, 1.0)
+            Image.fromarray((a * 255).astype(np.uint8), mode="L").save(os.path.join(out, name))
+        _save(alpha, "01_alpha_in.png")
+        _save(sam_mask.astype(np.float32), "02_sam_mask.png")
+        _save(sam_interior.astype(np.float32), "03_sam_interior.png")
+        _save(refined, "04_refined.png")
+    except Exception:
+        pass
 
 
 def _alpha_boxes(alpha: np.ndarray, max_boxes: int = 6) -> list[list[float]]:
