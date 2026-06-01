@@ -50,6 +50,20 @@ class PipelineConfig:
     uncertainty_sharpen_strength: float = 0.60
     use_solid_background_cleanup: bool = True
 
+    # Phase 0 (spec §2.3 Level 1): closed-form foreground unmixing.
+    # When a clean-plate background colour is known (flat/CG keyable route), emit
+    # the recovered foreground F instead of the observed composite I, killing the
+    # solid-colour rim. No model weights, no training.
+    use_decontam_unmix: bool = True
+
+    # Phase 1 (spec §2.1-2.5): failure-map analyzer + cost-sensitive per-region
+    # router. When on, the failure map drives the adaptive trimap band and the
+    # router decides which heavy experts (SDMatte/SAM3) are worth running — so a
+    # clean image stays fast even in Max Quality, while hard images get the full
+    # budget. route_mode picks λ: "fast" (large λ) / "smart" / "max" (λ→0).
+    use_region_router: bool = True
+    route_mode: str = "smart"
+
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
 
@@ -98,7 +112,10 @@ class PipelineConfig:
     use_sam3: bool = False
     sam3_model_version: str = "sam3.1"
     sam3_checkpoint_path: str | None = None
-    sam3_quality_trigger: float = 0.88
+    # Fire SAM 3.1 only when the matte is genuinely weak (or the scene is hard).
+    # The old 0.88 meant "almost always run", which—stacked on SDMatte+SAM2—was
+    # the Max-Quality 10-minute latency sink.
+    sam3_quality_trigger: float = 0.75
     sam3_confidence_threshold: float = 0.30
 
     # Phase 3: OWLv2 open-vocabulary localizer (Apache-2.0).

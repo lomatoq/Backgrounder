@@ -279,6 +279,11 @@ def remove_background(
     # Per-request settings (don't require model reload)
     pipeline.config.subject_type_override = subject_override if subject_override != "auto" else None
     pipeline.config.force_sdmatte = force_sdmatte and use_sdmatte
+    # Mode → router λ: Fast (large λ, only near-free experts) / Smart / Max (λ→0).
+    pipeline.config.route_mode = {
+        "Fast": "fast",
+        "Max Quality": "max",
+    }.get(mode, "smart")
 
     result = pipeline.process(image)
 
@@ -305,6 +310,12 @@ def remove_background(
         "cg_alpha_hole_ratio": result.metadata.get("cg_alpha_hole_ratio", result.metadata.get("route_alpha_hole_ratio", None)),
         "cg_alpha_halo_ratio": result.metadata.get("cg_alpha_halo_ratio", result.metadata.get("route_alpha_halo_ratio", None)),
         "tta": result.metadata.get("tta", False),
+        "route_mode": result.metadata.get("route_mode", None),
+        "route_lambda": result.metadata.get("route_lambda", None),
+        "route_experts_used": result.metadata.get("route_experts_used", None),
+        "route_decisions": result.metadata.get("route_decisions", None),
+        "sdmatte_router_vote": result.metadata.get("sdmatte_router_vote", None),
+        "sam3_router_vote": result.metadata.get("sam3_router_vote", None),
         "sdmatte_used": result.metadata.get("sdmatte_used", False),
         "sdmatte_forced": result.metadata.get("sdmatte_forced", False),
         "sdmatte_skipped": result.metadata.get("sdmatte_skipped", None),

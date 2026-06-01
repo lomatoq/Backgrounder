@@ -36,6 +36,9 @@ from backgrounder.stages import (
     uncertainty_gated_sharpen,
     visual_alpha_fixes,
 )
+from backgrounder.analyze import compute_failure_map
+from backgrounder.decontam import adaptive_trimap, unmix_foreground
+from backgrounder.route import LAMBDA_BY_MODE, plan_routes
 from backgrounder.utils import (
     resolve_device,
     compute_depth_edges,
@@ -333,6 +336,37 @@ class BackgroundRemovalPipeline:
                 ben2_confidence = out.confidence
                 break
 
+        # Stage B2 — Failure-map analyzer + cost-sensitive route plan (Phase 1).
+        # No-reference per-pixel difficulty from orthogonal signals (§2.1); the
+        # plan (§2.2) then decides which heavy experts are worth their cost. This
+        # is what keeps Max Quality fast on easy images: no failure region → no
+        # expensive expert dispatched, regardless of mode.
+        failure_map = None
+        route_plan = None
+        if self.config.use_region_router:
+            try:
+                with timer("stage_B2_failure_map", meta["timings_ms"]):
+                    model_alphas = [o.alpha for o in outputs if o.alpha is not None]
+                    failure_map = compute_failure_map(
+                        image,
+                        alpha,
+                        alpha_per_model=model_alphas if len(model_alphas) >= 2 else None,
+                        bg_rgb=route.bg_rgb if route.clean_border else None,
+                    )
+                    route_plan = plan_routes(
+                        failure_map,
+                        mode=self.config.route_mode,
+                        lam=LAMBDA_BY_MODE.get(self.config.route_mode),
+                        available=self._available_experts(),
+                    )
+                meta.update(failure_map.metadata())
+                meta.update(route_plan.metadata())
+            except Exception as exc:  # analysis must never break a working cutout
+                import warnings
+                warnings.warn(f"Region router disabled (analysis failed): {exc}")
+                failure_map = None
+                route_plan = None
+
         # Stage C — Depth
         depth_edges: Optional[np.ndarray] = None
         if self._depth_model is not None:
@@ -456,7 +490,19 @@ class BackgroundRemovalPipeline:
             meta["sdmatte_score_before"] = round(report.score, 3)
             meta["sdmatte_trigger"] = round(sdmatte_trigger, 3)
             auto_allowed = route.allow_sdmatte_auto
-            run_sdmatte = self.config.force_sdmatte or (auto_allowed and report.score < sdmatte_trigger)
+            # Router gate: when active, the cost-sensitive policy must also vote
+            # for a fine-matte expert (sdmatte/zim) somewhere — a clean image with
+            # no soft-edge region won't pay for diffusion even in Max Quality.
+            router_wants_sdmatte = route_plan is not None and bool(
+                {"sdmatte", "zim"} & set(route_plan.experts_used)
+            )
+            if self.config.use_region_router and route_plan is not None:
+                run_sdmatte = self.config.force_sdmatte or (
+                    auto_allowed and report.score < sdmatte_trigger and router_wants_sdmatte
+                )
+                meta["sdmatte_router_vote"] = router_wants_sdmatte
+            else:
+                run_sdmatte = self.config.force_sdmatte or (auto_allowed and report.score < sdmatte_trigger)
             if run_sdmatte:
                 reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
                 print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
@@ -482,10 +528,25 @@ class BackgroundRemovalPipeline:
                     meta["sdmatte_accepted"] = accept
             elif not auto_allowed:
                 meta["sdmatte_skipped"] = f"subject {subject_type} uses non-diffusion path"
+            elif (
+                self.config.use_region_router
+                and route_plan is not None
+                and report.score < sdmatte_trigger
+                and not router_wants_sdmatte
+            ):
+                meta["sdmatte_skipped"] = "router_no_fine_matte_region"
             else:
                 meta["sdmatte_skipped"] = f"quality {round(report.score,3)} >= trigger {round(sdmatte_trigger,3)}"
 
-        # Stage G — SAM 2.1 refinement (Phase 3, optional)
+        # Heavy-refiner cascade control: SDMatte, SAM 3.1 and SAM 2.1 are all
+        # expensive full-frame mask models. Running all three on every image is
+        # the main Max-Quality latency sink (spec §3 → route per-need, not always).
+        # We gate the SAM stages on quality/complexity instead of an always-on
+        # subject list, and treat SAM 2.1 as a fallback only when SAM 3.1 did not
+        # already run (the two are redundant boundary refiners).
+        sam3_executed = False
+
+        # Stage G — SAM 3.1 refinement (Phase 3, optional)
         if self.config.use_sam3:
             meta["sam3_enabled"] = True
             if self._sam3_load_error:
@@ -495,21 +556,26 @@ class BackgroundRemovalPipeline:
             elif _sam3_should_skip(subject_type, route):
                 meta["sam3_skipped"] = "route_uses_keying_or_text_cleanup"
             else:
-                _need_sam3 = (
-                    report.score < self.config.sam3_quality_trigger
-                    or subject_type in {
-                        "complex_multi",
-                        "portrait",
-                        "product",
-                        "product_opaque",
-                        "product_glass",
-                        "transparent",
-                        "transparent_object",
-                        "busy_scene",
-                    }
+                # Fire only when the matte is actually weak or the scene is
+                # genuinely hard — not for every portrait/product with a good
+                # base score (that was the always-on cascade).
+                _hard_scene = (
+                    subject_type in {"complex_multi", "busy_scene"}
                     or meta.get("route_background") == "busy"
                 )
+                if self.config.use_region_router and route_plan is not None:
+                    # Router gate: SAM 3.1 (the costliest expert) runs only when
+                    # the policy actually selected it for a disagreement/instability
+                    # region, or the scene is independently hard.
+                    router_wants_sam3 = "sam3" in route_plan.experts_used
+                    _need_sam3 = router_wants_sam3 or _hard_scene
+                    meta["sam3_router_vote"] = router_wants_sam3
+                else:
+                    _need_sam3 = (
+                        report.score < self.config.sam3_quality_trigger or _hard_scene
+                    )
                 if _need_sam3:
+                    sam3_executed = True
                     with timer("stage_G_sam3", meta["timings_ms"]):
                         alpha_sam3, sam3_meta = sam3_refine(
                             image=image,
@@ -539,12 +605,14 @@ class BackgroundRemovalPipeline:
                 else:
                     meta["sam3_skipped"] = (
                         f"quality {round(report.score,3)} >= trigger "
-                        f"{round(self.config.sam3_quality_trigger,3)}"
+                        f"{round(self.config.sam3_quality_trigger,3)} and scene not hard"
                     )
         else:
             meta["sam3_enabled"] = False
 
-        if self._sam2 is not None:
+        # SAM 2.1 is the boundary-refiner fallback. Skip it whenever SAM 3.1
+        # already ran this image — running both is redundant work for no gain.
+        if self._sam2 is not None and not sam3_executed:
             _need_sam2 = (
                 report.score < self.config.sam2_quality_trigger
                 or subject_type == "complex_multi"
@@ -567,6 +635,8 @@ class BackgroundRemovalPipeline:
                         meta["quality"] = str(report_sam2)
                         meta["sam2_used"] = True
                         meta["quality_sam2"] = str(report_sam2)
+        elif self._sam2 is not None and sam3_executed:
+            meta["sam2_skipped"] = "sam3_already_refined_boundary"
 
         # Stage H — Transparency post-processing (Phase 3)
         if subject_type in {"transparent", "transparent_object", "product_glass"}:
@@ -601,6 +671,16 @@ class BackgroundRemovalPipeline:
         # Stage E — Foreground decontamination
         with timer("stage_E_decontam", meta["timings_ms"]):
             image_np = np.array(image.convert("RGB"))
+
+            # On a known clean plate, recover the true foreground F by closed-form
+            # unmixing (spec §2.3 L1) rather than the chroma-only despill. Falls
+            # back to despill when the unmix core is disabled.
+            def _plate_recover(bg_rgb) -> np.ndarray:
+                if self.config.use_decontam_unmix:
+                    meta["foreground_decontam"] = "unmix_l1"
+                    return unmix_foreground(image_np, alpha, bg_rgb=bg_rgb)
+                return despill_solid_background(image_np, alpha, bg_rgb)
+
             if subject_type in {"transparent", "transparent_object", "product_glass"}:
                 foreground = image_np
             elif (
@@ -610,11 +690,11 @@ class BackgroundRemovalPipeline:
                 foreground = image_np
                 meta["foreground_decontam"] = "skipped_natural_busy_scene"
             elif meta.get("solid_bg_spill_cleanup") == "applied" and meta.get("solid_bg_bg_rgb"):
-                foreground = despill_solid_background(image_np, alpha, meta["solid_bg_bg_rgb"])
+                foreground = _plate_recover(meta["solid_bg_bg_rgb"])
             elif subject_type == "anime":
                 foreground = image_np
             elif meta.get("solid_bg_cleanup") == "applied" and meta.get("bg_rgb"):
-                foreground = despill_solid_background(image_np, alpha, meta["bg_rgb"])
+                foreground = _plate_recover(meta["bg_rgb"])
             else:
                 foreground = estimate_foreground(image_np, alpha, subject_type=subject_type)
 
@@ -623,7 +703,7 @@ class BackgroundRemovalPipeline:
                 and meta.get("solid_bg_spill_cleanup") != "applied"
                 and meta.get("route_bg_rgb")
             ):
-                foreground = despill_solid_background(image_np, alpha, meta["route_bg_rgb"])
+                foreground = _plate_recover(meta["route_bg_rgb"])
                 meta["busy_graphic_despill"] = True
 
         rgba = scrub_transparent_rgb(compose_rgba(foreground, alpha))
@@ -685,6 +765,16 @@ class BackgroundRemovalPipeline:
             quality_score=report.score,
             metadata={"tiled": True, "tile_size": self.config.tile_size},
         )
+
+    def _available_experts(self) -> list[str]:
+        """Experts the router may dispatch given which models are actually loaded."""
+        avail = ["base", "unmix", "crisp"]  # CPU / closed-form, always available
+        if self._sdmatte is not None:
+            avail.append("sdmatte")
+        if self._sam3 is not None and not self._sam3_load_error:
+            avail.append("sam3")
+        # "zim" is a Phase-2 expert; not wired yet, so never offered in v1.
+        return avail
 
     def _build_segmenters(self) -> None:
         if self._segmenters:
