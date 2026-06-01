@@ -96,7 +96,12 @@ class BackgroundRemovalPipeline:
     # ------------------------------------------------------------------ #
 
     def load(self) -> "BackgroundRemovalPipeline":
-        """Eagerly load all models. Call once at startup."""
+        """
+        Load the always-on models (segmenters, optional depth, classifier).
+
+        Heavy experts (ViTMatte/SDMatte/SAM2/SAM3/OWLv2) are lazy by default and
+        loaded on first use via the _ensure_* helpers — call once at startup.
+        """
         self._build_segmenters()
         for seg in self._segmenters:
             seg.load()
@@ -109,71 +114,114 @@ class BackgroundRemovalPipeline:
             )
             self._depth_model.load()
 
-        if self.config.use_vitmatte and self.config.vitmatte_allow_nc:
-            self._vitmatte = ViTMatteRefiner(
-                device=self._device,
-                fp16=self._fp16,
-                allow_nc_weights=True,
-            )
-            self._vitmatte.load()
-
-        if self.config.use_sdmatte:
-            if self._device != "cuda":
-                import warnings
-                warnings.warn(
-                    f"SDMatte requires CUDA but device is '{self._device}' — skipping. "
-                    "Install torch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu124"
-                )
-            else:
-                self._sdmatte = SDMatteRefiner(
-                    cache_dir=self.config.sdmatte_cache_dir,
-                    device=self._device,
-                    variant=self.config.sdmatte_variant,
-                    prompt_mode=self.config.sdmatte_prompt_mode,
-                    input_size=self.config.sdmatte_input_size,
-                )
-                self._sdmatte.load()
-
         if self.config.use_classifier:
             from backgrounder.classifier import SubjectClassifier
             self._classifier = SubjectClassifier(device=self._device)
             self._classifier.load()
 
-        if self.config.use_sam2:
-            self._sam2 = SAM2Segmenter(
-                device=self._device,
-                fp16=self._fp16,
-                model_id=self.config.sam2_model_id,
-            )
-            self._sam2.load()
-
-        if self.config.use_sam3:
-            if self._device != "cuda":
-                self._sam3_load_error = f"SAM 3.1 requires CUDA, current device is '{self._device}'"
-            else:
-                try:
-                    self._sam3 = SAM3Segmenter(
-                        device=self._device,
-                        fp16=self._fp16,
-                        model_version=self.config.sam3_model_version,
-                        checkpoint_path=self.config.sam3_checkpoint_path,
-                        confidence_threshold=self.config.sam3_confidence_threshold,
-                    )
-                    self._sam3.load()
-                except Exception as exc:
-                    import warnings
-                    self._sam3_load_error = str(exc)
-                    warnings.warn(f"SAM 3.1 disabled: {exc}")
-
-        if self.config.use_owlv2:
-            self._owlv2 = OWLv2Localizer(
-                device=self._device,
-                model_id=self.config.owlv2_model_id,
-            )
-            self._owlv2.load()
+        # Keep heavy experts resident only when explicitly not lazy (batch runs
+        # on large GPUs). Otherwise they are built on demand and freed after use.
+        if not self.config.lazy_load_experts:
+            self._ensure_vitmatte()
+            self._ensure_sdmatte()
+            self._ensure_sam2()
+            self._ensure_sam3()
+            self._ensure_owlv2()
 
         self._ready = True
         return self
+
+    # ------------------------------------------------------------------ #
+    # Lazy expert loaders / unloaders                                      #
+    # ------------------------------------------------------------------ #
+
+    def _ensure_vitmatte(self) -> Optional[ViTMatteRefiner]:
+        if self._vitmatte is not None:
+            return self._vitmatte
+        if not (self.config.use_vitmatte and self.config.vitmatte_allow_nc):
+            return None
+        self._vitmatte = ViTMatteRefiner(device=self._device, fp16=self._fp16, allow_nc_weights=True)
+        self._vitmatte.load()
+        return self._vitmatte
+
+    def _ensure_sdmatte(self) -> Optional[SDMatteRefiner]:
+        if self._sdmatte is not None:
+            return self._sdmatte
+        if not self.config.use_sdmatte:
+            return None
+        if self._device != "cuda":
+            import warnings
+            warnings.warn(
+                f"SDMatte requires CUDA but device is '{self._device}' — skipping."
+            )
+            return None
+        self._sdmatte = SDMatteRefiner(
+            cache_dir=self.config.sdmatte_cache_dir,
+            device=self._device,
+            variant=self.config.sdmatte_variant,
+            prompt_mode=self.config.sdmatte_prompt_mode,
+            input_size=self.config.sdmatte_input_size,
+        )
+        self._sdmatte.load()
+        return self._sdmatte
+
+    def _ensure_sam2(self) -> Optional[SAM2Segmenter]:
+        if self._sam2 is not None:
+            return self._sam2
+        if not self.config.use_sam2:
+            return None
+        self._sam2 = SAM2Segmenter(
+            device=self._device, fp16=self._fp16, model_id=self.config.sam2_model_id
+        )
+        self._sam2.load()
+        return self._sam2
+
+    def _ensure_sam3(self) -> Optional[SAM3Segmenter]:
+        if self._sam3 is not None:
+            return self._sam3
+        if not self.config.use_sam3:
+            return None
+        if self._device != "cuda":
+            self._sam3_load_error = f"SAM 3.1 requires CUDA, current device is '{self._device}'"
+            return None
+        try:
+            self._sam3 = SAM3Segmenter(
+                device=self._device,
+                fp16=self._fp16,
+                model_version=self.config.sam3_model_version,
+                checkpoint_path=self.config.sam3_checkpoint_path,
+                confidence_threshold=self.config.sam3_confidence_threshold,
+            )
+            self._sam3.load()
+            self._sam3_load_error = None
+        except Exception as exc:
+            import warnings
+            self._sam3_load_error = str(exc)
+            warnings.warn(f"SAM 3.1 disabled: {exc}")
+            self._sam3 = None
+        return self._sam3
+
+    def _ensure_owlv2(self) -> Optional[OWLv2Localizer]:
+        if self._owlv2 is not None:
+            return self._owlv2
+        if not self.config.use_owlv2:
+            return None
+        self._owlv2 = OWLv2Localizer(device=self._device, model_id=self.config.owlv2_model_id)
+        self._owlv2.load()
+        return self._owlv2
+
+    def _release_expert(self, attr: str) -> None:
+        """Unload a heavy expert + free VRAM, but only in lazy mode."""
+        if not self.config.lazy_load_experts:
+            return
+        model = getattr(self, attr, None)
+        if model is None:
+            return
+        try:
+            model.unload()
+        except Exception:
+            pass
+        setattr(self, attr, None)
 
     # Maximum long-edge resolution before we auto-downsample.
     # Keeps segmenter preprocessing fast and VRAM predictable.
@@ -409,6 +457,7 @@ class BackgroundRemovalPipeline:
         # Stage D — Expert refinement (Phase 2: routed; Phase 1: depth-only)
         report(0.45, "Refining alpha")
         print(f"[Stage D] Refining alpha (expert={_display_expert_name(expert)})...", flush=True)
+        vit = self._ensure_vitmatte()  # lazy; None unless ViTMatte is enabled
         with timer("stage_D_refine", meta["timings_ms"]):
             use_closed_form = (
                 self.config.use_closed_form_refine
@@ -423,7 +472,7 @@ class BackgroundRemovalPipeline:
                 trimap=trimap,
                 expert=expert,
                 depth_edges=depth_edges,
-                vitmatte=self._vitmatte,
+                vitmatte=vit,
                 use_closed_form=use_closed_form,
                 closed_form_max_pixels=self.config.closed_form_max_pixels,
             )
@@ -473,7 +522,7 @@ class BackgroundRemovalPipeline:
                 trimap=wider_trimap,
                 expert=expert,
                 depth_edges=depth_edges,
-                vitmatte=self._vitmatte,
+                vitmatte=vit,
                 use_closed_form=use_closed_form,
                 closed_form_max_pixels=self.config.closed_form_max_pixels,
             )
@@ -492,6 +541,8 @@ class BackgroundRemovalPipeline:
                 meta["quality"] = str(report2)
                 meta["quality_retry"] = str(report2)
 
+        self._release_expert("_vitmatte")  # free VRAM before heavy SAM/SDMatte
+
         # Stage G0 — SDMatte diffusion refinement (optional, heavy CUDA path)
         # Only a narrow set auto-routes through SDMatte; force_sdmatte remains
         # an explicit developer override.
@@ -499,7 +550,7 @@ class BackgroundRemovalPipeline:
         if route.allow_sdmatte_auto:
             sdmatte_trigger = min(sdmatte_trigger + 0.10, 0.85)
 
-        if self._sdmatte is not None:
+        if self.config.use_sdmatte and self._device == "cuda":
             meta["sdmatte_score_before"] = round(report.score, 3)
             meta["sdmatte_trigger"] = round(sdmatte_trigger, 3)
             auto_allowed = route.allow_sdmatte_auto
@@ -520,26 +571,31 @@ class BackgroundRemovalPipeline:
                 reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
                 report(0.62, "SDMatte refining")
                 print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
-                with timer("stage_G0_sdmatte", meta["timings_ms"]):
-                    self._sdmatte.is_transparent = subject_type == "transparent"
-                    alpha_sdmatte = self._sdmatte.refine(image, alpha, trimap)
-                    report_sdmatte = score_alpha(
-                        alpha_sdmatte, depth_edges=depth_edges, confidence=ben2_confidence
-                    )
-                    # Always accept when forced (user override takes priority).
-                    # When score-triggered: accept if score doesn't regress by more than 0.02.
-                    accept = (
-                        self.config.force_sdmatte
-                        or report_sdmatte.score >= report.score - 0.02
-                    )
-                    if accept:
-                        alpha = alpha_sdmatte
-                        report = report_sdmatte
-                        meta["quality"] = str(report_sdmatte)
-                    meta["sdmatte_used"] = True
-                    meta["sdmatte_forced"] = self.config.force_sdmatte
-                    meta["sdmatte_score"] = round(report_sdmatte.score, 3)
-                    meta["sdmatte_accepted"] = accept
+                sd = self._ensure_sdmatte()  # lazy: load ~5 GB only now
+                if sd is None:
+                    meta["sdmatte_skipped"] = "load_failed"
+                else:
+                    with timer("stage_G0_sdmatte", meta["timings_ms"]):
+                        sd.is_transparent = subject_type == "transparent"
+                        alpha_sdmatte = sd.refine(image, alpha, trimap)
+                        report_sdmatte = score_alpha(
+                            alpha_sdmatte, depth_edges=depth_edges, confidence=ben2_confidence
+                        )
+                        # Always accept when forced (user override takes priority).
+                        # When score-triggered: accept if score doesn't regress by more than 0.02.
+                        accept = (
+                            self.config.force_sdmatte
+                            or report_sdmatte.score >= report.score - 0.02
+                        )
+                        if accept:
+                            alpha = alpha_sdmatte
+                            report = report_sdmatte
+                            meta["quality"] = str(report_sdmatte)
+                        meta["sdmatte_used"] = True
+                        meta["sdmatte_forced"] = self.config.force_sdmatte
+                        meta["sdmatte_score"] = round(report_sdmatte.score, 3)
+                        meta["sdmatte_accepted"] = accept
+                    self._release_expert("_sdmatte")
             elif not auto_allowed:
                 meta["sdmatte_skipped"] = f"subject {subject_type} uses non-diffusion path"
             elif (
@@ -563,10 +619,8 @@ class BackgroundRemovalPipeline:
         # Stage G — SAM 3.1 refinement (Phase 3, optional)
         if self.config.use_sam3:
             meta["sam3_enabled"] = True
-            if self._sam3_load_error:
-                meta["sam3_skipped"] = self._sam3_load_error
-            elif self._sam3 is None:
-                meta["sam3_skipped"] = "not_loaded"
+            if self._device != "cuda":
+                meta["sam3_skipped"] = "requires_cuda"
             elif _sam3_should_skip(subject_type, route):
                 meta["sam3_skipped"] = "route_uses_keying_or_text_cleanup"
             else:
@@ -589,34 +643,40 @@ class BackgroundRemovalPipeline:
                         report.score < self.config.sam3_quality_trigger or _hard_scene
                     )
                 if _need_sam3:
-                    sam3_executed = True
-                    with timer("stage_G_sam3", meta["timings_ms"]):
-                        report(0.78, "SAM 3.1 refining")
-                        alpha_sam3, sam3_meta = sam3_refine(
-                            image=image,
-                            alpha=alpha,
-                            sam3=self._sam3,
-                            owlv2=self._owlv2,
-                            subject_type=subject_type,
-                        )
-                        meta.update(sam3_meta)
-                        report_sam3 = score_alpha(
-                            alpha_sam3,
-                            depth_edges=depth_edges,
-                            confidence=ben2_confidence,
-                        )
-                        accept = (
-                            sam3_meta.get("sam3_status") == "applied"
-                            and report_sam3.score >= report.score - 0.12
-                        )
-                        meta["sam3_used"] = bool(accept)
-                        meta["sam3_accepted"] = bool(accept)
-                        meta["sam3_score"] = round(report_sam3.score, 3)
-                        if accept:
-                            alpha = alpha_sam3
-                            report = report_sam3
-                            meta["quality"] = str(report_sam3)
-                            meta["quality_sam3"] = str(report_sam3)
+                    s3 = self._ensure_sam3()  # lazy load on demand
+                    if s3 is None:
+                        meta["sam3_skipped"] = self._sam3_load_error or "load_failed"
+                    else:
+                        sam3_executed = True
+                        with timer("stage_G_sam3", meta["timings_ms"]):
+                            report(0.78, "SAM 3.1 refining")
+                            alpha_sam3, sam3_meta = sam3_refine(
+                                image=image,
+                                alpha=alpha,
+                                sam3=s3,
+                                owlv2=self._ensure_owlv2(),
+                                subject_type=subject_type,
+                            )
+                            meta.update(sam3_meta)
+                            report_sam3 = score_alpha(
+                                alpha_sam3,
+                                depth_edges=depth_edges,
+                                confidence=ben2_confidence,
+                            )
+                            accept = (
+                                sam3_meta.get("sam3_status") == "applied"
+                                and report_sam3.score >= report.score - 0.12
+                            )
+                            meta["sam3_used"] = bool(accept)
+                            meta["sam3_accepted"] = bool(accept)
+                            meta["sam3_score"] = round(report_sam3.score, 3)
+                            if accept:
+                                alpha = alpha_sam3
+                                report = report_sam3
+                                meta["quality"] = str(report_sam3)
+                                meta["quality_sam3"] = str(report_sam3)
+                        self._release_expert("_owlv2")
+                        self._release_expert("_sam3")
                 else:
                     meta["sam3_skipped"] = (
                         f"quality {round(report.score,3)} >= trigger "
@@ -627,30 +687,34 @@ class BackgroundRemovalPipeline:
 
         # SAM 2.1 is the boundary-refiner fallback. Skip it whenever SAM 3.1
         # already ran this image — running both is redundant work for no gain.
-        if self._sam2 is not None and not sam3_executed:
+        if self.config.use_sam2 and not sam3_executed:
             _need_sam2 = (
                 report.score < self.config.sam2_quality_trigger
                 or subject_type == "complex_multi"
             )
             if _need_sam2:
-                with timer("stage_G_sam2", meta["timings_ms"]):
-                    alpha_sam2 = sam2_refine(
-                        image=image,
-                        alpha=alpha,
-                        sam2=self._sam2,
-                        owlv2=self._owlv2,
-                        subject_type=subject_type,
-                    )
-                    report_sam2 = score_alpha(
-                        alpha_sam2, depth_edges=depth_edges, confidence=ben2_confidence
-                    )
-                    if report_sam2.score >= report.score:
-                        alpha = alpha_sam2
-                        report = report_sam2
-                        meta["quality"] = str(report_sam2)
-                        meta["sam2_used"] = True
-                        meta["quality_sam2"] = str(report_sam2)
-        elif self._sam2 is not None and sam3_executed:
+                s2 = self._ensure_sam2()  # lazy load on demand
+                if s2 is not None:
+                    with timer("stage_G_sam2", meta["timings_ms"]):
+                        alpha_sam2 = sam2_refine(
+                            image=image,
+                            alpha=alpha,
+                            sam2=s2,
+                            owlv2=self._ensure_owlv2(),
+                            subject_type=subject_type,
+                        )
+                        report_sam2 = score_alpha(
+                            alpha_sam2, depth_edges=depth_edges, confidence=ben2_confidence
+                        )
+                        if report_sam2.score >= report.score:
+                            alpha = alpha_sam2
+                            report = report_sam2
+                            meta["quality"] = str(report_sam2)
+                            meta["sam2_used"] = True
+                            meta["quality_sam2"] = str(report_sam2)
+                    self._release_expert("_owlv2")
+                    self._release_expert("_sam2")
+        elif self.config.use_sam2 and sam3_executed:
             meta["sam2_skipped"] = "sam3_already_refined_boundary"
 
         # Stage H — Transparency post-processing (Phase 3)
@@ -783,11 +847,15 @@ class BackgroundRemovalPipeline:
         )
 
     def _available_experts(self) -> list[str]:
-        """Experts the router may dispatch given which models are actually loaded."""
+        """
+        Experts the router may dispatch. Heavy experts are lazy (loaded on demand)
+        so availability is decided by config + device, not by whether the model is
+        already resident.
+        """
         avail = ["base", "unmix", "crisp"]  # CPU / closed-form, always available
-        if self._sdmatte is not None:
+        if self.config.use_sdmatte and self._device == "cuda":
             avail.append("sdmatte")
-        if self._sam3 is not None and not self._sam3_load_error:
+        if self.config.use_sam3 and self._device == "cuda" and not self._sam3_load_error:
             avail.append("sam3")
         # "zim" is a Phase-2 expert; not wired yet, so never offered in v1.
         return avail

@@ -64,6 +64,13 @@ class PipelineConfig:
     use_region_router: bool = True
     route_mode: str = "smart"
 
+    # Lazy-load heavy experts (ViTMatte/SDMatte/SAM2/SAM3/OWLv2) on first actual
+    # use and unload them afterwards, instead of holding all of them in VRAM for
+    # the whole session. Essential on 12 GB GPUs where Max Quality otherwise
+    # OOM-thrashes (SDMatte alone is ~5 GB). Set False to keep models resident
+    # (faster for batch runs on large GPUs).
+    lazy_load_experts: bool = True
+
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
 
