@@ -239,10 +239,14 @@ def remove_background(
     use_owlv2: bool,
     subject_override: str,
     checkerboard: bool,
+    progress=None,
 ) -> tuple[Image.Image, Image.Image, str]:
     """
     Returns: (result_rgba, preview_on_checker, info_text)
     """
+    import gradio as gr
+    if progress is None:
+        progress = gr.Progress()
     if image is None:
         return None, None, "Upload an image first."
 
@@ -268,6 +272,7 @@ def remove_background(
             }
             return image, preview, json.dumps(info, indent=2)
 
+    progress(0.0, desc="Loading models (first run downloads weights)…")
     pipeline = _get_pipeline(
         device, segmenters, use_depth, use_classifier,
         use_vitmatte, use_closed_form, use_uncertainty_sharpen,
@@ -285,7 +290,7 @@ def remove_background(
         "Max Quality": "max",
     }.get(mode, "smart")
 
-    result = pipeline.process(image)
+    result = pipeline.process(image, progress=progress)
 
     # Compose over checkerboard for visual preview
     preview = _compose_checker(result.rgba) if checkerboard else result.rgba

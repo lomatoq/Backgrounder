@@ -179,8 +179,15 @@ class BackgroundRemovalPipeline:
     # Keeps segmenter preprocessing fast and VRAM predictable.
     _MAX_SIDE = 2048
 
-    def process(self, image: Image.Image) -> MattingResult:
-        """Run the full pipeline on a single PIL image."""
+    def process(self, image: Image.Image, progress=None) -> MattingResult:
+        """
+        Run the full pipeline on a single PIL image.
+
+        progress : optional callable(fraction: float, desc: str) for UI feedback
+                   (e.g. a Gradio gr.Progress). Called at each major stage.
+        """
+        _report = _ProgressReporter(progress)
+        _report(0.02, "Loading models")
         if not self._ready:
             self.load()
 
@@ -217,11 +224,12 @@ class BackgroundRemovalPipeline:
         if self.config.tile_size > 0 and (W > self.config.tile_size or H > self.config.tile_size):
             result = self._process_tiled(image)
         else:
-            result = self._process_single(image)
+            result = self._process_single(image, report=_report)
 
         # Upscale alpha/rgba back to original resolution if we downscaled.
         if scale < 1.0:
             result = result.upscale_to(orig_size)
+        _report(1.0, "Done")
         return result
 
     def _maybe_downscale(self, image: Image.Image) -> tuple[Image.Image, float]:
@@ -244,7 +252,8 @@ class BackgroundRemovalPipeline:
     # Internal                                                             #
     # ------------------------------------------------------------------ #
 
-    def _process_single(self, image: Image.Image) -> MattingResult:
+    def _process_single(self, image: Image.Image, report=None) -> MattingResult:
+        report = report or _ProgressReporter(None)
         meta: dict = {"device": self._device, "timings_ms": {}}
         t_total = time.perf_counter()
         W, H = image.size
@@ -257,6 +266,7 @@ class BackgroundRemovalPipeline:
         subject_type = "generic"
 
         if self._classifier is not None:
+            report(0.08, "Classifying subject")
             print("[Stage A] Classifying subject type...", flush=True)
             with timer("stage_A_classify", meta["timings_ms"]):
                 if self.config.subject_type_override:
@@ -297,6 +307,7 @@ class BackgroundRemovalPipeline:
         # Stage B — Coarse ensemble
         tta_on = self.config.use_tta
         tta_tag = " +TTA" if tta_on else ""
+        report(0.15, "Segmenter ensemble")
         print(f"[Stage B] Running segmenter ensemble ({len(self._segmenters)} models{tta_tag})...", flush=True)
         with timer("stage_B_ensemble", meta["timings_ms"]):
             alpha, uncertainty, outputs = ensemble_predict(
@@ -347,6 +358,7 @@ class BackgroundRemovalPipeline:
             try:
                 with timer("stage_B2_failure_map", meta["timings_ms"]):
                     model_alphas = [o.alpha for o in outputs if o.alpha is not None]
+                    report(0.32, "Failure-map + routing")
                     failure_map = compute_failure_map(
                         image,
                         alpha,
@@ -395,6 +407,7 @@ class BackgroundRemovalPipeline:
             )
 
         # Stage D — Expert refinement (Phase 2: routed; Phase 1: depth-only)
+        report(0.45, "Refining alpha")
         print(f"[Stage D] Refining alpha (expert={_display_expert_name(expert)})...", flush=True)
         with timer("stage_D_refine", meta["timings_ms"]):
             use_closed_form = (
@@ -505,6 +518,7 @@ class BackgroundRemovalPipeline:
                 run_sdmatte = self.config.force_sdmatte or (auto_allowed and report.score < sdmatte_trigger)
             if run_sdmatte:
                 reason = "forced" if self.config.force_sdmatte else f"score {report.score:.3f} < trigger {sdmatte_trigger:.2f}"
+                report(0.62, "SDMatte refining")
                 print(f"[Stage G0] SDMatte refining ({reason})...", flush=True)
                 with timer("stage_G0_sdmatte", meta["timings_ms"]):
                     self._sdmatte.is_transparent = subject_type == "transparent"
@@ -577,6 +591,7 @@ class BackgroundRemovalPipeline:
                 if _need_sam3:
                     sam3_executed = True
                     with timer("stage_G_sam3", meta["timings_ms"]):
+                        report(0.78, "SAM 3.1 refining")
                         alpha_sam3, sam3_meta = sam3_refine(
                             image=image,
                             alpha=alpha,
@@ -669,6 +684,7 @@ class BackgroundRemovalPipeline:
             meta.update(visual_meta)
 
         # Stage E — Foreground decontamination
+        report(0.92, "Foreground decontamination")
         with timer("stage_E_decontam", meta["timings_ms"]):
             image_np = np.array(image.convert("RGB"))
 
@@ -833,3 +849,34 @@ def _sam3_should_skip(subject_type: str, route) -> bool:
 
 def _display_expert_name(expert: str) -> str:
     return "crisp_edges" if expert == "depth_only" else expert
+
+
+class _ProgressReporter:
+    """
+    Thin adapter around an optional progress callback.
+
+    Accepts either a 2-arg callable(fraction, desc) or a Gradio-style
+    ``gr.Progress`` (callable as ``progress(fraction, desc=...)``). Monotonic:
+    never reports a fraction lower than one already reported, so optional stages
+    that are skipped don't make the bar jump backwards. All errors are swallowed
+    — progress reporting must never break a cutout.
+    """
+
+    def __init__(self, cb) -> None:
+        self._cb = cb
+        self._last = 0.0
+
+    def __call__(self, fraction: float, desc: str = "") -> None:
+        if self._cb is None:
+            return
+        frac = max(self._last, min(float(fraction), 1.0))
+        self._last = frac
+        try:
+            self._cb(frac, desc=desc)
+        except TypeError:
+            try:
+                self._cb(frac, desc)
+            except Exception:
+                pass
+        except Exception:
+            pass
