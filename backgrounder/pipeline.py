@@ -125,9 +125,17 @@ class BackgroundRemovalPipeline:
             self._depth_model.load()
 
         if self.config.use_classifier:
-            from backgrounder.classifier import SubjectClassifier
-            self._classifier = SubjectClassifier(device=self._device)
-            self._classifier.load()
+            # The CLIP classifier is optional — if it fails to load (e.g. HF
+            # cache/processor hiccup) degrade to generic routing instead of
+            # crashing the whole request.
+            try:
+                from backgrounder.classifier import SubjectClassifier
+                self._classifier = SubjectClassifier(device=self._device)
+                self._classifier.load()
+            except Exception as exc:
+                import warnings
+                warnings.warn(f"Subject classifier disabled ({exc}); using generic routing.")
+                self._classifier = None
 
         # Keep heavy experts resident only when explicitly not lazy (batch runs
         # on large GPUs). Otherwise they are built on demand and freed after use.

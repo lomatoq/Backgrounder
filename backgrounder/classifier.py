@@ -142,7 +142,17 @@ class SubjectClassifier:
         import torch
         from transformers import CLIPModel, CLIPProcessor
 
-        self._processor = CLIPProcessor.from_pretrained(self._MODEL_ID)
+        try:
+            self._processor = CLIPProcessor.from_pretrained(self._MODEL_ID)
+        except Exception:
+            # Some transformers versions reject this checkpoint because it ships
+            # no processor_config.json. Rebuild the processor from its components
+            # (preprocessor_config.json + tokenizer files), which do exist.
+            from transformers import CLIPImageProcessor, CLIPTokenizerFast
+            self._processor = CLIPProcessor(
+                image_processor=CLIPImageProcessor.from_pretrained(self._MODEL_ID),
+                tokenizer=CLIPTokenizerFast.from_pretrained(self._MODEL_ID),
+            )
         self._model = CLIPModel.from_pretrained(self._MODEL_ID).to(self._device)
         self._model.eval()
 
