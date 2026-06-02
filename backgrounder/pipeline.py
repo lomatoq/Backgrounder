@@ -752,6 +752,35 @@ class BackgroundRemovalPipeline:
         else:
             meta["sam3_enabled"] = False
 
+        # Stage 1b — soft edge matting within the SAM 3.1 silhouette.
+        # SAM's mask is hard; for hair/fur we re-matte only the silhouette's edge
+        # band (interior stays solid) to recover soft strands. Uses ViTMatte when
+        # available, else the guided-filter fallback inside expert_refine.
+        if (
+            self.config.use_seg_edge_matte
+            and meta.get("sam3_used")
+            and subject_type in {"portrait", "animal_fur", "plant_thin"}
+        ):
+            vit = self._ensure_vitmatte()
+            edge_trimap = adaptive_trimap(
+                alpha, base_dilation=18, min_dilation=6, max_dilation=44
+            )
+            with timer("stage_G2_seg_edge_matte", meta["timings_ms"]):
+                alpha = expert_refine(
+                    image=image,
+                    alpha=alpha,
+                    trimap=edge_trimap,
+                    expert="vitmatte",
+                    depth_edges=depth_edges,
+                    vitmatte=vit,
+                    use_closed_form=self.config.use_closed_form_refine,
+                    closed_form_max_pixels=self.config.closed_form_max_pixels,
+                )
+            self._release_expert("_vitmatte")
+            report = score_alpha(alpha, depth_edges=depth_edges, confidence=ben2_confidence)
+            meta["seg_edge_matte"] = "vitmatte" if vit is not None else "guided_fallback"
+            _dbg("G2_seg_edge_matte", alpha)
+
         # SAM 2.1 is the boundary-refiner fallback. Skip it whenever SAM 3.1
         # already ran this image — running both is redundant work for no gain.
         if self.config.use_sam2 and not sam3_executed:

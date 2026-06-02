@@ -71,6 +71,11 @@ class PipelineConfig:
     # (faster for batch runs on large GPUs).
     lazy_load_experts: bool = True
 
+    # Stage 1b: after SAM 3.1 establishes the silhouette for a hair/fur subject,
+    # run the matting expert on the silhouette's edge band to recover soft strands
+    # (SAM's hard mask alone has no soft hair). Interior stays solid.
+    use_seg_edge_matte: bool = True
+
     # Export premultiplied alpha (avoids fringing on composition).
     premultiplied: bool = False
 
