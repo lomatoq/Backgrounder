@@ -302,6 +302,7 @@ class BackgroundRemovalPipeline:
 
     def _process_single(self, image: Image.Image, prog=None) -> MattingResult:
         prog = prog or _ProgressReporter(None)
+        _dbg = _StageDumper(image)
         meta: dict = {"device": self._device, "timings_ms": {}}
         t_total = time.perf_counter()
         W, H = image.size
@@ -367,6 +368,7 @@ class BackgroundRemovalPipeline:
             )
         if tta_on:
             meta["tta"] = True
+        _dbg("B_ensemble", alpha)
 
         route = analyze_image_route(
             image=image,
@@ -476,6 +478,7 @@ class BackgroundRemovalPipeline:
                 use_closed_form=use_closed_form,
                 closed_form_max_pixels=self.config.closed_form_max_pixels,
             )
+        _dbg("D_expert_refine", alpha)
 
         # text_logo already has binary-snapped crisp edges from color_key;
         # uncertainty sharpening would distort those clean edges.
@@ -491,6 +494,7 @@ class BackgroundRemovalPipeline:
                     threshold=self.config.uncertainty_sharpen_threshold,
                     strength=self.config.uncertainty_sharpen_strength,
                 )
+            _dbg("D2_uncertainty_sharpen", alpha)
 
         if subject_type == "anime" and self._sdmatte is None and route.use_cartoon_snap:
             with timer("stage_D4_cartoon_alpha_snap", meta["timings_ms"]):
@@ -503,6 +507,7 @@ class BackgroundRemovalPipeline:
             with timer("stage_D5_graphic_alpha_normalize", meta["timings_ms"]):
                 alpha = _normalize_graphic_alpha(alpha, subject_type=subject_type)
                 meta["graphic_alpha_normalize"] = True
+            _dbg("D5_graphic_normalize", alpha)
 
         # Stage F — Quality judge + wider-trimap retry
         with timer("stage_F_judge", meta["timings_ms"]):
@@ -690,6 +695,7 @@ class BackgroundRemovalPipeline:
                                 meta["quality_sam3"] = str(report_sam3)
                         self._release_expert("_owlv2")
                         self._release_expert("_sam3")
+                        _dbg("G_sam3", alpha)
                 else:
                     meta["sam3_skipped"] = (
                         f"quality {round(report.score,3)} >= trigger "
@@ -759,6 +765,7 @@ class BackgroundRemovalPipeline:
                 route_meta=meta,
             )
             meta.update(visual_meta)
+        _dbg("H3_visual_qa", alpha)
 
         # Stage E — Foreground decontamination
         prog(0.92, "Foreground decontamination")
@@ -799,6 +806,7 @@ class BackgroundRemovalPipeline:
                 foreground = _plate_recover(meta["route_bg_rgb"])
                 meta["busy_graphic_despill"] = True
 
+        _dbg("final", alpha)
         rgba = scrub_transparent_rgb(compose_rgba(foreground, alpha))
         total_ms = round((time.perf_counter() - t_total) * 1000, 1)
         meta["timings_ms"]["total"] = total_ms
@@ -930,6 +938,34 @@ def _sam3_should_skip(subject_type: str, route) -> bool:
 
 def _display_expert_name(expert: str) -> str:
     return "crisp_edges" if expert == "depth_only" else expert
+
+
+class _StageDumper:
+    """Env-gated (BACKGROUNDER_DEBUG_DIR) per-stage alpha dump for diagnosis."""
+
+    def __init__(self, image: Image.Image) -> None:
+        import os
+        self._dir = os.environ.get("BACKGROUNDER_DEBUG_DIR")
+        self._i = 0
+        if self._dir:
+            os.makedirs(self._dir, exist_ok=True)
+            try:
+                image.convert("RGB").save(os.path.join(self._dir, "00_input.png"))
+            except Exception:
+                pass
+
+    def __call__(self, tag: str, alpha: np.ndarray) -> None:
+        if not self._dir:
+            return
+        import os
+        self._i += 1
+        try:
+            a = np.clip(np.asarray(alpha, dtype=np.float32), 0.0, 1.0)
+            Image.fromarray((a * 255).astype(np.uint8), mode="L").save(
+                os.path.join(self._dir, f"stage_{self._i:02d}_{tag}.png")
+            )
+        except Exception:
+            pass
 
 
 class _ProgressReporter:

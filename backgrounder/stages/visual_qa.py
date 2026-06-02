@@ -33,24 +33,34 @@ def visual_alpha_fixes(
     meta: dict = {}
     fixed = alpha.astype(np.float32).copy()
 
-    fixed, checker_meta = remove_checkerboard_background(image, fixed, subject_type)
-    meta.update(checker_meta)
+    # When a strong segmentation (SAM 3.1 / SAM 2.1) already produced a confident
+    # silhouette, the image-domain background re-keys below are not just
+    # unnecessary, they are harmful: they sample a background tone and remove
+    # foreground pixels that happen to match it (a light wall vs a light sweater,
+    # a dark plate vs a dark suit), punching the body into speckle. Trust the
+    # segmentation and skip them.
+    confident_segmentation = bool(route_meta.get("sam3_used") or route_meta.get("sam2_used"))
+    if confident_segmentation:
+        meta["visual_cleanup_skipped"] = "confident_segmentation"
+    else:
+        fixed, checker_meta = remove_checkerboard_background(image, fixed, subject_type)
+        meta.update(checker_meta)
 
-    fixed, residue_meta = remove_graphic_border_residue(
-        image=image,
-        alpha=fixed,
-        subject_type=subject_type,
-        route_meta=route_meta,
-    )
-    meta.update(residue_meta)
+        fixed, residue_meta = remove_graphic_border_residue(
+            image=image,
+            alpha=fixed,
+            subject_type=subject_type,
+            route_meta=route_meta,
+        )
+        meta.update(residue_meta)
 
-    fixed, portrait_meta = remove_portrait_lower_surface(
-        image=image,
-        alpha=fixed,
-        subject_type=subject_type,
-        route_meta=route_meta,
-    )
-    meta.update(portrait_meta)
+        fixed, portrait_meta = remove_portrait_lower_surface(
+            image=image,
+            alpha=fixed,
+            subject_type=subject_type,
+            route_meta=route_meta,
+        )
+        meta.update(portrait_meta)
 
     report = visual_quality_report(image, fixed, route_meta)
     meta.update({f"visual_{k}": v for k, v in report.items()})
