@@ -14,9 +14,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from PIL import Image
+
+# Console may be cp1252 (Windows); never let a non-ASCII filename crash the run.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 ROOT = Path(__file__).resolve().parent
 IMAGES = ROOT / "test_images"
@@ -27,6 +34,11 @@ _MODE = {
     "smart": dict(segs="birefnet_hr,ben2", tta=False, vit=False, cf=False, sd=False, s3=False, s2=False, owl=False),
     "max":   dict(segs="birefnet_hr,ben2", tta=True,  vit=True,  cf=True,  sd=True,  s3=True,  s2=True,  owl=True),
 }
+
+
+def _slug(name: str) -> str:
+    s = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "_" for c in name)
+    return s.strip("_")[:40] or "img"
 
 
 def build_pipeline(mode: str, device: str):
@@ -57,16 +69,25 @@ def main() -> None:
     if args.only:
         imgs = [p for p in imgs if args.only in p.name]
 
-    for p in imgs:
-        out = RESULTS / args.mode / p.stem
+    for idx, p in enumerate(imgs):
+        # Stable ASCII output dir so cyrillic/odd filenames never break paths.
+        out = RESULTS / args.mode / f"{idx:02d}_{_slug(p.stem)}"
         (out / "stages").mkdir(parents=True, exist_ok=True)
         os.environ["BACKGROUNDER_DEBUG_DIR"] = str(out / "stages")
-        res = pipe.process(Image.open(p))
-        res.rgba.save(out / "rgba.png")
-        Image.fromarray((res.alpha.clip(0, 1) * 255).astype("uint8"), "L").save(out / "alpha.png")
-        (out / "info.json").write_text(json.dumps(res.metadata, ensure_ascii=False, indent=2, default=str))
-        print(f"{p.name:28s} q={res.quality_score:.3f} subject={res.metadata.get('subject_type')} "
-              f"experts={res.metadata.get('route_experts_used')} sam3={res.metadata.get('sam3_used')}")
+        try:
+            res = pipe.process(Image.open(p))
+            res.rgba.save(out / "rgba.png")
+            Image.fromarray((res.alpha.clip(0, 1) * 255).astype("uint8"), "L").save(out / "alpha.png")
+            (out / "info.json").write_text(
+                json.dumps(res.metadata, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+            )
+            (out / "source.txt").write_text(p.name, encoding="utf-8")
+            line = (f"{idx:02d} {p.name} -> q={res.quality_score:.3f} "
+                    f"subject={res.metadata.get('subject_type')} "
+                    f"experts={res.metadata.get('route_experts_used')} sam3={res.metadata.get('sam3_used')}")
+        except Exception as exc:  # one bad image must not abort the batch
+            line = f"{idx:02d} {p.name} -> FAILED: {type(exc).__name__}: {exc}"
+        print(line.encode("ascii", "replace").decode("ascii"))
 
 
 if __name__ == "__main__":
