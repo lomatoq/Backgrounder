@@ -649,6 +649,16 @@ class BackgroundRemovalPipeline:
                 # sweater). Transparent/glass and text/logo are deliberately
                 # excluded (handled by _sam3_should_skip / soft-matting routes).
                 _opaque_object = subject_type in _SAM3_PRIMARY_TYPES
+                # Routing fix: a cartoon/sticker on a busy, non-keyable background
+                # (e.g. a Spider-Man frame in a shop) is an opaque CHARACTER, not a
+                # flat sticker on a clean plate — give it the SAM 3.1 silhouette
+                # instead of the crisp-key graphic route, which leaves mask speckle.
+                _graphic_on_busy = (
+                    subject_type in {"sticker_logo", "anime", "flat_cartoon"}
+                    and not (route.clean_border and route.keyable)
+                )
+                _opaque_object = _opaque_object or _graphic_on_busy
+                meta["sam3_graphic_on_busy"] = _graphic_on_busy
                 if self.config.use_region_router and route_plan is not None:
                     router_wants_sam3 = "sam3" in route_plan.experts_used
                     _need_sam3 = router_wants_sam3 or _hard_scene or _opaque_object
@@ -666,6 +676,12 @@ class BackgroundRemovalPipeline:
                         meta["sam3_skipped"] = self._sam3_load_error or "load_failed"
                     else:
                         sam3_executed = True
+                        # A "sticker" text prompt fails on a character in a busy
+                        # scene (Spider-Man → empty mask). Prompt SAM 3.1 as a
+                        # generic foreground object instead for that case.
+                        sam3_subject = subject_type
+                        if _graphic_on_busy and subject_type == "sticker_logo":
+                            sam3_subject = "generic"
                         with timer("stage_G_sam3", meta["timings_ms"]):
                             prog(0.78, "SAM 3.1 refining")
                             alpha_sam3, sam3_meta = sam3_refine(
@@ -673,7 +689,7 @@ class BackgroundRemovalPipeline:
                                 alpha=alpha,
                                 sam3=s3,
                                 owlv2=self._ensure_owlv2(),
-                                subject_type=subject_type,
+                                subject_type=sam3_subject,
                             )
                             meta.update(sam3_meta)
                             report_sam3 = score_alpha(
