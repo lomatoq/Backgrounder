@@ -677,15 +677,34 @@ class BackgroundRemovalPipeline:
                             iou = sam3_meta.get("sam3_iou_with_alpha") or 0.0
                             ar = sam3_meta.get("sam3_area_ratio") or 0.0
                             strong_geometry = iou >= 0.90 and 0.80 <= ar <= 1.25
-                            accept = sam3_meta.get("sam3_status") == "applied" and (
-                                report_sam3.score >= report.score - 0.12
-                                or strong_geometry
+
+                            # Strict safeguard: never let SAM 3.1 ERASE foreground the
+                            # base was confident about. SAM's single-object mask can
+                            # drop detached parts / fine structure (a detached oven
+                            # door, mitts, thin handles). If it removes a meaningful
+                            # fraction of the base foreground, reject it outright — SAM
+                            # may only solidify/refine, never amputate detail.
+                            from scipy.ndimage import binary_dilation as _bd
+                            base_fg = alpha > 0.5
+                            base_area = int(base_fg.sum())
+                            sam3_fg = _bd(alpha_sam3 > 0.5, iterations=3)
+                            lost_ratio = (
+                                float((base_fg & ~sam3_fg).sum()) / base_area if base_area else 0.0
+                            )
+                            loses_detail = lost_ratio > 0.05
+                            meta["sam3_lost_fg_ratio"] = round(lost_ratio, 4)
+
+                            accept = (
+                                sam3_meta.get("sam3_status") == "applied"
+                                and not loses_detail
+                                and (report_sam3.score >= report.score - 0.12 or strong_geometry)
                             )
                             meta["sam3_used"] = bool(accept)
                             meta["sam3_accepted"] = bool(accept)
                             meta["sam3_accept_reason"] = (
-                                "strong_geometry" if (accept and report_sam3.score < report.score - 0.12)
-                                else ("score_ok" if accept else "rejected")
+                                "would_erase_base_detail" if loses_detail
+                                else "strong_geometry" if (accept and report_sam3.score < report.score - 0.12)
+                                else ("score_ok" if accept else "rejected_low_score")
                             )
                             meta["sam3_score"] = round(report_sam3.score, 3)
                             if accept:
