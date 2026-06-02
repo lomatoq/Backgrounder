@@ -10,3 +10,6 @@ output/
 *.log
 .idea/
 .vscode/
+eval/test_images/
+eval/results/
+ab_runs/
