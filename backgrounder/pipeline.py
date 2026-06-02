@@ -47,6 +47,16 @@ from backgrounder.utils import (
     timer,
 )
 
+# Opaque object classes for which SAM 3.1 is the primary silhouette authority
+# (Stage 1a, seg-first). Transparent/glass need soft matting and text/logo need a
+# crisp hole-preserving key, so they are intentionally NOT here.
+_SAM3_PRIMARY_TYPES = {
+    "portrait", "animal_fur", "plant_thin",
+    "product", "product_opaque", "vehicle",
+    "anime", "flat_cartoon",
+    "complex_multi", "busy_scene", "generic",
+}
+
 
 class BackgroundRemovalPipeline:
     """
@@ -629,24 +639,27 @@ class BackgroundRemovalPipeline:
             elif _sam3_should_skip(subject_type, route):
                 meta["sam3_skipped"] = "route_uses_keying_or_text_cleanup"
             else:
-                # Fire only when the matte is actually weak or the scene is
-                # genuinely hard — not for every portrait/product with a good
-                # base score (that was the always-on cascade).
                 _hard_scene = (
                     subject_type in {"complex_multi", "busy_scene"}
                     or meta.get("route_background") == "busy"
                 )
+                # Stage 1a (seg-first): for opaque object classes SAM 3.1 is the
+                # PRIMARY silhouette authority, not an occasional refiner — it is
+                # the reliable fix for noisy/low-contrast bodies (dark suit, grey
+                # sweater). Transparent/glass and text/logo are deliberately
+                # excluded (handled by _sam3_should_skip / soft-matting routes).
+                _opaque_object = subject_type in _SAM3_PRIMARY_TYPES
                 if self.config.use_region_router and route_plan is not None:
-                    # Router gate: SAM 3.1 (the costliest expert) runs only when
-                    # the policy actually selected it for a disagreement/instability
-                    # region, or the scene is independently hard.
                     router_wants_sam3 = "sam3" in route_plan.experts_used
-                    _need_sam3 = router_wants_sam3 or _hard_scene
+                    _need_sam3 = router_wants_sam3 or _hard_scene or _opaque_object
                     meta["sam3_router_vote"] = router_wants_sam3
                 else:
                     _need_sam3 = (
-                        report.score < self.config.sam3_quality_trigger or _hard_scene
+                        report.score < self.config.sam3_quality_trigger
+                        or _hard_scene
+                        or _opaque_object
                     )
+                meta["sam3_primary_silhouette"] = _opaque_object
                 if _need_sam3:
                     s3 = self._ensure_sam3()  # lazy load on demand
                     if s3 is None:
